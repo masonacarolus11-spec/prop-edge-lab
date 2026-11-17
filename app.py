@@ -11,7 +11,7 @@ st.title('📈 Prop Edge Lab')
 st.caption('Research prototype • paper testing only • no automatic bets • no guaranteed returns')
 DB = Path(os.getenv('PROP_DB', 'prop_scanner.sqlite'))
 SPORTS = {'NBA':'basketball_nba','CBB':'basketball_ncaab','NFL':'americanfootball_nfl','CFB':'americanfootball_ncaaf','MLB':'baseball_mlb'}
-ALL_SPORTS = ['NBA','CBB','NFL','CFB','CS2','Tennis','Cricket','MLB']
+ALL_SPORTS = ['NBA','CBB','NFL','CFB','CS2','Tennis','Cricket','MLB','PGA Golf']
 
 @st.cache_data(ttl=300,show_spinner=False)
 def fetch_events(key, sport):
