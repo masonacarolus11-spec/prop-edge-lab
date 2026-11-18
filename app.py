@@ -41,6 +41,71 @@ def prob_model(mu, sigma, line, side, distribution):
     z=(line-mu)/sigma
     return float(norm.sf(z) if side=='Over' else norm.cdf(z))
 
+def rank_sportsbook_prices(odds_df):
+    """Compare each offered price with other books at the identical prop line.
+
+    This is a market-price comparison, NOT a player-performance projection.
+    """
+    needed = {'book', 'market', 'player', 'side', 'line', 'odds'}
+    if not needed.issubset(odds_df.columns):
+        return pd.DataFrame()
+    df = odds_df.copy()
+    df['line'] = pd.to_numeric(df['line'], errors='coerce')
+    df['odds'] = pd.to_numeric(df['odds'], errors='coerce')
+    df['side'] = df['side'].astype(str).str.title()
+    df = df.dropna(subset=['book', 'market', 'player', 'line', 'odds'])
+    df = df[df['side'].isin(['Over', 'Under']) & (df['odds'] != 0)]
+    if df.empty:
+        return pd.DataFrame()
+
+    # Each bookmaker contributes one no-vig estimate per player/market/line.
+    paired = []
+    keys = ['player', 'market', 'line', 'book']
+    for key, group in df.groupby(keys):
+        over = group[group['side'] == 'Over']
+        under = group[group['side'] == 'Under']
+        if over.empty or under.empty:
+            continue
+        try:
+            p_over = american_prob(over.iloc[0]['odds'])
+            p_under = american_prob(under.iloc[0]['odds'])
+        except (ValueError, ZeroDivisionError):
+            continue
+        if p_over + p_under <= 0:
+            continue
+        paired.append(dict(zip(keys, key), fair_over=p_over/(p_over+p_under),
+                           fair_under=p_under/(p_over+p_under)))
+    if not paired:
+        return pd.DataFrame()
+    fair = pd.DataFrame(paired)
+    results = []
+    for _, offer in df.iterrows():
+        # Exclude the book being evaluated to avoid comparing it with itself.
+        peers = fair[(fair['player'] == offer['player']) &
+                     (fair['market'] == offer['market']) &
+                     (fair['line'] == offer['line']) &
+                     (fair['book'] != offer['book'])]
+        if peers.empty:
+            continue
+        side = offer['side']
+        consensus_prob = float(peers['fair_over' if side == 'Over' else 'fair_under'].median())
+        implied = american_prob(offer['odds'])
+        decimal_odds = 1 + (100/abs(offer['odds']) if offer['odds'] < 0 else offer['odds']/100)
+        results.append({
+            'player': offer['player'], 'market': offer['market'], 'line': offer['line'],
+            'side': side, 'book': offer['book'], 'odds': int(offer['odds']),
+            'other_books': int(peers['book'].nunique()),
+            'peer_fair_probability': round(100*consensus_prob, 1),
+            'offered_implied_probability': round(100*implied, 1),
+            'price_gap_pp': round(100*(consensus_prob-implied), 1),
+            'market_based_ev_pct': round(100*(consensus_prob*decimal_odds-1), 1),
+        })
+    if not results:
+        return pd.DataFrame()
+    return pd.DataFrame(results).sort_values(['market_based_ev_pct', 'other_books'],
+                                               ascending=[False, False]).reset_index(drop=True)
+
+
 def normalize_upload(df):
     required={'sport','event','player','market','line','platform'}
     missing=required-set(df.columns)
@@ -106,6 +171,29 @@ with tab1:
             st.dataframe(consensus.sort_values('books',ascending=False),use_container_width=True)
             st.download_button('Export consensus',consensus.to_csv(index=False),'consensus.csv')
         else: st.info('No matched Over/Under pairs at identical lines were returned.')
+    st.divider()
+    st.subheader('📊 Automatic sportsbook price rankings')
+    st.caption('Compares prices at the SAME player, market and line against OTHER sportsbooks. '
+               'These are market-derived estimates, not verified player hit probabilities or guaranteed edges.')
+    if odds_df.empty:
+        st.info('Fetch event player props above to populate the rankings. No extra API call is needed.')
+    else:
+        ranked = rank_sportsbook_prices(odds_df)
+        if ranked.empty:
+            st.info('Rankings require matched Over/Under prices from at least two different sportsbooks '
+                    'at the same line. Your current data does not have enough comparable prices.')
+        else:
+            min_peers = st.selectbox('Minimum other sportsbooks', [1, 2, 3], index=0)
+            shown = ranked[ranked['other_books'] >= min_peers]
+            if shown.empty:
+                st.info('No offers meet that minimum. Try fewer comparison sportsbooks.')
+            else:
+                st.dataframe(shown, use_container_width=True, hide_index=True)
+                st.download_button('Export ranked price comparisons', shown.to_csv(index=False),
+                                   'prop_edge_price_rankings.csv', mime='text/csv')
+                st.caption('Positive market-based EV is only a hypothetical calculation using other '
+                           'books’ median no-vig prices. Differences in timing, limits and stale lines '
+                           'can invalidate it. Injuries, game logs and opponent defense are NOT yet included.')
     st.divider()
     st.subheader('Import PrizePicks / Underdog lines')
     template=pd.DataFrame([{'sport':'NBA','event':'Example A vs B','player':'Example Player','market':'points','line':19.5,'platform':'PrizePicks'}])
