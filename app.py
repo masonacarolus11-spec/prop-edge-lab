@@ -1,5 +1,8 @@
 import os, sqlite3, math, json, datetime as dt
 from collections import Counter
+from zoneinfo import ZoneInfo
+
+import requests
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -104,6 +107,102 @@ def show_research_links(sport):
     for category, label, url, description in RESEARCH_LINKS[sport]:
         st.markdown(f'**{category}** · [{label}]({url})  \n{description}')
     st.caption('Open the source for current status. These links use no odds credits and do not change the rankings.')
+
+
+@st.cache_data(ttl=86400, max_entries=128, show_spinner=False)
+def find_weather_locations(city):
+    response = requests.get(
+        'https://geocoding-api.open-meteo.com/v1/search',
+        params={'name': city, 'count': 10, 'language': 'en'},
+        timeout=8,
+    )
+    response.raise_for_status()
+    return [place for place in response.json().get('results', [])
+            if place.get('timezone') and 'latitude' in place and 'longitude' in place]
+
+
+@st.cache_data(ttl=900, max_entries=128, show_spinner=False)
+def fetch_game_weather(latitude, longitude):
+    response = requests.get(
+        'https://api.open-meteo.com/v1/forecast',
+        params={
+            'latitude': latitude, 'longitude': longitude, 'timeformat': 'unixtime',
+            'forecast_days': 8, 'wind_speed_unit': 'mph', 'temperature_unit': 'fahrenheit',
+            'precipitation_unit': 'inch',
+            'hourly': 'temperature_2m,wind_speed_10m,wind_gusts_10m,precipitation_probability',
+        },
+        timeout=8,
+    )
+    response.raise_for_status()
+    return pd.DataFrame(response.json()['hourly'])
+
+
+def football_weather_window(forecast, kickoff):
+    # Precipitation probability covers the preceding hour. Use the next four hourly readings.
+    start = kickoff.timestamp()
+    return forecast.loc[(forecast['time'] > start) & (forecast['time'] <= start + 4 * 3600)].copy()
+
+
+def passing_weather_note(wind, gusts, rain):
+    if wind >= 15 or gusts >= 25:
+        return 'Wind may make passing less efficient. A shift toward rushing is possible if the game situation allows it.'
+    if rain >= 60:
+        return 'Precipitation is likely. Check conditions near kickoff. A wet field or ball may affect execution, but this forecast does not establish a pass-volume lean.'
+    return 'No strong weather signal for a change in passing volume. Team tendencies and game situation are more useful here.'
+
+
+def show_football_weather():
+    with st.expander('Game weather and passing outlook'):
+        st.caption('Choose the stadium city and enter kickoff in that city’s local time. Weather checks use zero odds credits.')
+        roof = st.selectbox('Stadium roof at kickoff', ['Unknown', 'Open-air or roof open', 'Closed roof'])
+        if roof == 'Closed roof':
+            st.info('A closed roof shields the field from outdoor wind and precipitation. No outdoor weather adjustment.')
+            return
+        city = st.text_input('Stadium city', placeholder='For example, Green Bay')
+        if len(city.strip()) < 2:
+            return
+        try:
+            places = find_weather_locations(city.strip())
+            if not places:
+                st.info('No matching city found. Try the city name without the state.')
+                return
+            place = st.selectbox(
+                'Forecast location', places,
+                format_func=lambda item: ', '.join(
+                    str(item[field]) for field in ('name', 'admin1', 'country') if item.get(field)
+                ),
+            )
+            timezone = ZoneInfo(place['timezone'])
+            today = dt.datetime.now(timezone).date()
+            game_date = st.date_input('Local game date', value=today, min_value=today,
+                                      max_value=today + dt.timedelta(days=6))
+            game_time = st.time_input('Local kickoff time', value=dt.time(13))
+            if not st.button('Check game weather'):
+                return
+            kickoff = dt.datetime.combine(game_date, game_time, tzinfo=timezone)
+            if kickoff <= dt.datetime.now(timezone):
+                st.info('Choose an upcoming kickoff time.')
+                return
+            forecast = fetch_game_weather(place['latitude'], place['longitude'])
+            window = football_weather_window(forecast, kickoff)
+            readings = window[['wind_speed_10m', 'wind_gusts_10m', 'precipitation_probability']]
+            if len(readings) != 4 or readings.isna().any().any():
+                st.info('Complete wind and precipitation forecasts are unavailable for this game window.')
+                return
+            wind, gusts, rain = readings.max()
+            st.write(f'Peak sustained wind: **{wind:g} mph** · Peak gusts: **{gusts:g} mph** · Highest hourly precipitation chance: **{rain:g}%**')
+            if roof == 'Unknown':
+                st.info('Confirm whether the roof will be open before applying outdoor conditions.')
+            st.write(passing_weather_note(wind, gusts, rain))
+            window['time'] = pd.to_datetime(window['time'], unit='s', utc=True).dt.tz_convert(timezone).dt.strftime('%a %I:%M %p %Z')
+            st.dataframe(window.rename(columns={
+                'time': 'Local hour', 'temperature_2m': 'Temperature (°F)',
+                'wind_speed_10m': 'Wind (mph)', 'wind_gusts_10m': 'Gusts (mph)',
+                'precipitation_probability': 'Precipitation chance (%)',
+            }), hide_index=True)
+            st.caption('City-level forecast from [Open-Meteo](https://open-meteo.com/). The wind thresholds are screening rules. Weather does not change the app’s rankings.')
+        except (requests.RequestException, ValueError, KeyError):
+            st.error('Weather data is temporarily unavailable for this location.')
 
 
 def init_db():
@@ -439,6 +538,8 @@ with best:
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS)
     with st.expander(f'{pick_sport} stats and availability'):
         show_research_links(pick_sport)
+    if pick_sport in ('NFL', 'CFB'):
+        show_football_weather()
     pick_region = st.selectbox('Sportsbook region', ['us', 'us2', 'uk', 'eu', 'au'])
     board = pd.DataFrame(columns=template.columns)
     if boards:
