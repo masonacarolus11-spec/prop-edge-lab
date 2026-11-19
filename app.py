@@ -394,6 +394,138 @@ def pick_research_inputs(sport, baseline, sigma, line, distribution, nba_context
         return adjusted, market_over, 'Research: ' + ', '.join(recorded) + '.', signal
 
 
+NBA_LOG_RELEASE = ('https://github.com/sportsdataverse/sportsdataverse-data/'
+                   'releases/download/nba_stats_player_game_logs')
+NBA_STAT_COLUMNS = {'player_points': 'pts', 'player_rebounds': 'reb', 'player_assists': 'ast'}
+
+
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+def load_nba_game_log(season):
+    from io import BytesIO
+
+    response = requests.get(f'{NBA_LOG_RELEASE}/player_game_logs_{season}.csv', timeout=(5, 15))
+    response.raise_for_status()
+    logs = pd.read_csv(BytesIO(response.content), low_memory=False)
+    logs.columns = logs.columns.str.lower()
+    required = {'player_id', 'player_name', 'team_name', 'team_abbreviation', 'game_id',
+                'game_date', 'matchup', 'min', *NBA_STAT_COLUMNS.values()}
+    if not required.issubset(logs.columns):
+        raise ValueError('Unexpected NBA game log columns')
+    logs['game_id'] = logs['game_id'].astype(str).str.zfill(10)
+    logs['game_date'] = pd.to_datetime(logs['game_date'], errors='coerce').dt.date
+    for column in ('min', *NBA_STAT_COLUMNS.values()):
+        logs[column] = pd.to_numeric(logs[column], errors='coerce')
+    logs = logs[logs['game_id'].str.startswith('002') & logs['game_date'].notna()]
+    logs = logs[logs['min'] > 0].drop_duplicates(['game_id', 'player_id'])
+    logs['opponent'] = logs['matchup'].str.extract(r'(?:@|vs\.?)\s+([A-Z]{2,3})$')[0]
+    logs['home'] = ~logs['matchup'].str.contains('@', na=False)
+    return logs
+
+
+def nba_name_key(value):
+    import unicodedata
+
+    text = unicodedata.normalize('NFKD', str(value).casefold())
+    return ''.join(char for char in text if char.isalnum())
+
+
+def nba_automatic_context(logs, row, game_date):
+    stat = NBA_STAT_COLUMNS.get(row['market'])
+    teams = str(row['event']).split(' at ', 1)
+    if stat is None or len(teams) != 2:
+        return {'Auto status': 'Unsupported market or matchup format'}
+    names = logs['player_name'].map(nba_name_key)
+    player = logs.loc[names.eq(nba_name_key(row['player'])) & logs[stat].notna()]
+    player = player.sort_values(['game_date', 'game_id'])
+    if player['player_id'].nunique() != 1 or len(player) < 5:
+        return {'Auto status': 'Insufficient or ambiguous player history'}
+    team_codes = []
+    for team in teams:
+        full_name = nba_name_key(team)
+        codes = logs.loc[logs['team_name'].map(
+            lambda value: full_name.endswith(nba_name_key(value)) if pd.notna(value) else False
+        ), 'team_abbreviation'].dropna().unique()
+        if len(codes) != 1:
+            return {'Auto status': 'Could not verify both teams'}
+        team_codes.append(codes[0])
+    team = player.iloc[-1]['team_abbreviation']
+    if team not in team_codes or team_codes[0] == team_codes[1]:
+        return {'Auto status': 'Player’s last recorded team differs from the matchup'}
+    on_current_team = player[player['team_abbreviation'].eq(team)]
+    if len(on_current_team) < 5:
+        return {'Auto status': 'Fewer than five appearances with the matchup team'}
+    home = team == team_codes[1]
+    opponent = team_codes[int(not home)]
+    recent = on_current_team.tail(5)
+    same_venue = on_current_team[on_current_team['home'].eq(home)]
+    against = on_current_team[on_current_team['opponent'].eq(opponent)]
+    latest_date = recent.iloc[-1]['game_date']
+    mean_minutes = float(recent['min'].mean())
+    season_rate = player[stat].sum() / player['min'].sum()
+    recent_rate = recent[stat].sum() / recent['min'].sum()
+    rate = 0.6 * season_rate + 0.4 * recent_rate
+    if len(same_venue) >= 5:
+        rate = 0.9 * rate + 0.1 * same_venue[stat].sum() / same_venue['min'].sum()
+    defense = logs.groupby(['opponent', 'game_id'])[stat].sum(min_count=1).groupby(level=0).agg(['mean', 'count'])
+    eligible = defense[defense['count'] >= 5]['mean'].dropna()
+    defense_rank = None
+    if opponent in eligible and eligible.mean() > 0:
+        defense_rank = int(eligible.rank(method='min')[opponent])
+        rate *= 1 + max(-0.08, min(0.08, 0.25 * (eligible[opponent] / eligible.mean() - 1)))
+    projection = mean_minutes * rate
+    deviation = float(player[stat].std())
+    status = 'Pregame model · lineup unverified'
+    lean = None
+    gap = None
+    estimate = row.get('market_estimate_pct')
+    market_side = row.get('side')
+    if pd.notna(estimate) and market_side in ('Over', 'Under') and deviation > 0:
+        market_over = (estimate if market_side == 'Over' else 100 - estimate) / 100
+        lean, gap = research_pick_signal(projection, deviation, float(row['line']),
+                                         'Normal (continuous approximation)', market_over, False)
+    return {
+        'Auto status': status, 'Season average': round(float(player[stat].mean()), 2),
+        'Last five average': round(float(recent[stat].mean()), 2),
+        'Expected minutes': round(mean_minutes, 1),
+        'Home/away average': round(float(same_venue[stat].mean()), 2) if not same_venue.empty else None,
+        'Head-to-head average': round(float(against[stat].mean()), 2) if not against.empty else None,
+        'Prior meetings': len(against),
+        'Days since last appearance': (game_date - latest_date).days,
+        'Opponent team defense rank': f'{defense_rank}/{len(eligible)}' if defense_rank else None,
+        'Projected stat': round(projection, 2), 'Season standard deviation': round(deviation, 2),
+        'Model–market Over gap (pp)': round(gap, 1) if gap is not None else None,
+        'Model signal': lean, 'Last player game in feed': str(latest_date),
+    }
+
+
+def show_auto_nba_board(picks, board_scope):
+    scope = sha256((repr(board_scope) + picks.to_json()).encode()).hexdigest()[:16]
+    with st.expander('Automatic NBA research', expanded=True):
+        st.caption('Season, recent and matchup stats from NBA game logs via SportsDataverse. Uses zero Odds API credits.')
+        saved = st.session_state.get('auto_nba_board')
+        if not saved or saved[0] != scope:
+            try:
+                today = dt.datetime.now(ZoneInfo('America/New_York')).date()
+                season = today.year + int(today.month >= 9)
+                with st.spinner('Checking NBA game logs…'):
+                    logs = load_nba_game_log(season)
+                    rows = []
+                    for _, row in picks.iterrows():
+                        start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
+                        date = today if pd.isna(start) else start.tz_convert('America/New_York').date()
+                        context = nba_automatic_context(logs[logs['game_date'] < date], row, date)
+                        rows.append({**row.to_dict(), **context})
+                saved = (scope, pd.DataFrame(rows))
+                st.session_state['auto_nba_board'] = saved
+            except (requests.RequestException, ValueError, KeyError, TypeError):
+                st.error('NBA game logs are temporarily unavailable from the source.')
+                return
+        st.dataframe(saved[1], hide_index=True, use_container_width=True)
+        st.download_button('Download automatic NBA research', saved[1].to_csv(index=False),
+                           'nba_automatic_research.csv', mime='text/csv')
+        st.caption('Team defense rank uses overall production allowed for the selected stat, with 1 allowing the least. Head-to-head and rest are shown for review. Current lineup and injury status, true usage rate, defense by position, coaching plans, blowout risk and opening prices still need separate verification.')
+
+
 def show_board_research(picks, sport, board_scope):
     with st.expander('Research a line on this board'):
         st.caption('Choose a PrizePicks line and add your research. Saved reviews appear below the board in this session.')
@@ -832,6 +964,10 @@ with best:
         if not api_key:
             st.info('Enter an Odds API key to compare lines.')
         saved = st.session_state.get('prizepicks_matches')
+        if pick_sport == 'NBA' and not live_board and not board.empty and (
+            not saved or saved[0] != pick_scope
+        ):
+            show_auto_nba_board(board, pick_scope)
         if saved and saved[0] == pick_scope:
             picks, checked, targeted, issues = saved[1]
             st.caption(f'{checked} of {targeted} selected games checked.')
@@ -849,6 +985,8 @@ with best:
                 st.dataframe(picks, hide_index=True, use_container_width=True)
                 st.download_button('Download all comparison results', picks.to_csv(index=False),
                                    f'{pick_sport.lower()}_prizepicks.csv', mime='text/csv')
+                if pick_sport == "NBA":
+                    show_auto_nba_board(picks, pick_scope)
                 show_board_research(picks, pick_sport, pick_scope)
 
 with tab1:
