@@ -687,10 +687,14 @@ def pick_evaluation(row):
         factors.append(f"Sportsbook comparison status: {value('status')}.")
 
     if model_stat is not None:
-        factors.append(
-            f"Projected {model_stat:.2f} at {value('Expected minutes'):.1f} expected minutes. "
-            f"Season average {value('Season average'):.2f}; last five {value('Last five average'):.2f}."
-        )
+        minutes = value('Expected minutes')
+        role = f' at {minutes:.1f} expected minutes' if minutes is not None else ''
+        factors.append(f"Projected {model_stat:.2f}{role}. Season average "
+                       f"{value('Season average'):.2f}; last five {value('Last five average'):.2f}.")
+        opportunities = value('Recent opportunities per game')
+        if opportunities is not None:
+            factors.append(f"Recent opportunities: {opportunities:.1f} per game versus "
+                           f"{value('Season opportunities per game'):.1f} this season.")
         if value('Season standard deviation') is not None:
             factors.append(f"Season standard deviation was {value('Season standard deviation'):.2f}.")
         if value('Venue split games') and value('Venue split games') >= 5:
@@ -773,8 +777,142 @@ def automatic_nba_board(picks, board_scope):
     return saved[1]
 
 
+NFL_STATS = {
+    'player_pass_yds': ('passing_yards', 'attempts'),
+    'player_rush_yds': ('rushing_yards', 'carries'),
+    'player_reception_yds': ('receiving_yards', 'targets'),
+}
+NFL_TEAM_CODES = dict(zip(
+    'cardinals falcons ravens bills panthers bears bengals browns cowboys broncos lions packers '
+    'texans colts jaguars chiefs raiders chargers rams dolphins vikings patriots saints giants '
+    'jets eagles steelers 49ers seahawks buccaneers titans commanders'.split(),
+    'ARI ATL BAL BUF CAR CHI CIN CLE DAL DEN DET GB HOU IND JAX KC LV LAC LA MIA MIN NE NO NYG '
+    'NYJ PHI PIT SF SEA TB TEN WAS'.split(),
+))
+
+
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+def load_nfl_history(season):
+    from io import BytesIO
+
+    root = 'https://github.com/nflverse/nflverse-data/releases/download'
+    sources = {
+        'stats': f'{root}/stats_player/stats_player_week_{season}.csv',
+        'games': f'{root}/schedules/games.csv',
+    }
+    frames = {}
+    for label, url in sources.items():
+        response = requests.get(url, timeout=(5, 15))
+        response.raise_for_status()
+        frames[label] = pd.read_csv(BytesIO(response.content), low_memory=False)
+    games = frames['games']
+    games = games.loc[games['season'].eq(season) & games['game_type'].eq('REG')].copy()
+    games['gameday'] = pd.to_datetime(games['gameday'], errors='coerce').dt.date
+    stats = frames['stats']
+    stats = stats.loc[stats['season_type'].eq('REG')].merge(
+        games[['game_id', 'gameday', 'home_team']], on='game_id', validate='many_to_one',
+    )
+    stats['name_key'] = stats['player_display_name'].map(nba_name_key)
+    return stats, games
+
+
+def nfl_automatic_context(stats, games, row, today):
+    settings = NFL_STATS.get(row['market'])
+    teams = str(row['event']).split(' at ', 1)
+    codes = [NFL_TEAM_CODES.get(team.lower().strip().split()[-1]) if team.strip() else None
+             for team in teams]
+    if settings is None or len(codes) != 2 or not all(codes):
+        return {'Auto status': 'NFL market or matchup could not be verified'}
+    stat, opportunities = settings
+    upcoming = games.loc[games['away_team'].eq(codes[0]) & games['home_team'].eq(codes[1])
+                         & games['gameday'].ge(today) & games['home_score'].isna()]
+    start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
+    if pd.notna(start):
+        date = start.tz_convert('America/New_York').date()
+        upcoming = upcoming.loc[upcoming['gameday'].eq(date)]
+    if len(upcoming) != 1:
+        return {'Auto status': 'Could not verify a single upcoming NFL game'}
+    date = upcoming.iloc[0]['gameday']
+    history = stats.loc[stats['gameday'].lt(date)]
+    player = history.loc[history['name_key'].eq(nba_name_key(row['player'])) & history[stat].notna()]
+    player = player.sort_values(['gameday', 'game_id'])
+    if len(player) < 5 or player['player_id'].nunique() != 1:
+        return {'Auto status': 'Fewer than five verified player games or ambiguous player name'}
+    team = player.iloc[-1]['team']
+    own_team = player.loc[player['team'].eq(team)]
+    if team not in codes or len(own_team) < 5:
+        return {'Auto status': 'Insufficient player history with the matchup team'}
+    home = team == codes[1]
+    opponent = codes[0 if home else 1]
+    recent = own_team.tail(5)
+    season_mean, recent_mean = float(player[stat].mean()), float(recent[stat].mean())
+    projection = 0.6 * season_mean + 0.4 * recent_mean
+    venue = own_team.loc[own_team['home_team'].eq(team).eq(home)]
+    meetings = own_team.loc[own_team['opponent_team'].eq(opponent)]
+    if len(venue) >= 5:
+        projection = 0.9 * projection + 0.1 * float(venue[stat].mean())
+    if len(meetings) >= 3:
+        projection = 0.95 * projection + 0.05 * float(meetings[stat].mean())
+    defense = history.groupby(['opponent_team', 'game_id'])[stat].sum(min_count=1)
+    eligible = defense.groupby(level=0).agg(['mean', 'count'])
+    eligible = eligible.loc[eligible['count'].ge(5), 'mean'].dropna()
+    rank = None
+    if opponent in eligible.index and eligible.mean() > 0:
+        rank = f'{int(eligible.rank(method="min")[opponent])}/{len(eligible)}'
+        projection *= 1 + max(-0.08, min(0.08, 0.25 * (eligible[opponent] / eligible.mean() - 1)))
+    sigma = float(player[stat].std())
+    line = float(row['line'])
+    model_over = 100 * prob_model(projection, sigma, line, 'Over', 'Normal') if sigma > 0 and not line.is_integer() else None
+    lean = gap = None
+    odds = row.get('market_estimate_pct')
+    side = row.get('side')
+    if pd.notna(odds) and side in ('Over', 'Under') and sigma > 0:
+        over = (odds if side == 'Over' else 100 - odds) / 100
+        lean, gap = research_pick_signal(projection, sigma, line, 'Normal', over, False)
+        if lean.startswith('Model lean'):
+            if pd.notna(row.get('PrizePicks line change')) and row['PrizePicks line change'] != 0:
+                lean = 'Recheck — PrizePicks line changed since first observed.'
+            elif row.get('Lopsided game flag') == 'Elevated':
+                lean = 'Recheck — large market spread could change late-game play calling.'
+    return {
+        'Auto status': 'Pregame NFL model · lineup and injuries unverified',
+        'Season average': round(season_mean, 2), 'Last five average': round(recent_mean, 2),
+        'Season opportunities per game': round(float(player[opportunities].mean()), 2),
+        'Recent opportunities per game': round(float(recent[opportunities].mean()), 2),
+        'Days since last appearance': (date - recent.iloc[-1]['gameday']).days,
+        'Venue split games': len(venue), 'Prior meetings': len(meetings),
+        'Opponent team defense rank': rank,
+        'Defense factor applied': 'Team defense' if rank else None,
+        'Projected stat': round(projection, 2), 'Season standard deviation': round(sigma, 2),
+        'Model More estimate (%)': model_over, 'Model signal': lean,
+        'Model–market Over gap (pp)': round(gap, 1) if gap is not None else None,
+    }
+
+
+def automatic_nfl_board(picks, board_scope):
+    today = dt.datetime.now(ZoneInfo('America/New_York')).date()
+    season = today.year - int(today.month < 7)
+    freshness = int(dt.datetime.now(dt.timezone.utc).timestamp()) // 3600
+    scope = sha256((repr(board_scope) + picks.to_json() + str(freshness)).encode()).hexdigest()[:16]
+    saved = st.session_state.get('auto_nfl_board')
+    if saved and saved[0] == scope:
+        return saved[1]
+    try:
+        with st.spinner('Checking NFL game history…'):
+            stats, games = load_nfl_history(season)
+            records = [{**row.to_dict(), **nfl_automatic_context(stats, games, row, today)}
+                       for _, row in picks.iterrows()]
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        st.warning('NFL game history is unavailable. Sportsbook comparisons are still shown.')
+        return picks
+    board = pd.DataFrame(records)
+    st.session_state['auto_nfl_board'] = scope, board
+    return board
+
+
 def show_best_picks_board(picks, sport, board_scope):
-    full_board = automatic_nba_board(picks, board_scope) if sport == 'NBA' else picks
+    adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
+    full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
     columns = [
         'player', 'market', 'line', 'Model signal', 'Projected stat',
         'side', 'market_estimate_pct', 'comparison_books', 'Auto status', 'Injury report status',
@@ -794,6 +932,8 @@ def show_best_picks_board(picks, sport, board_scope):
                        f'{sport.lower()}_best_picks.csv', mime='text/csv')
     if sport == 'NBA':
         st.caption('NBA projections use game logs and injury reports via SportsDataverse. Roles and usage are estimates. Defense rank 1 allows the least. No extra odds credits are used.')
+    if sport == 'NFL':
+        st.caption('NFL projections use nflverse regular-season game data. Check current injuries, lineups and weather separately. No extra odds credits are used.')
     show_board_research(full_board, sport, board_scope, selected)
 
 
@@ -1270,6 +1410,8 @@ with best:
         board = all_lines[identity.loc[all_lines.index, 'sport'].eq(pick_sport.casefold())]
 
     if pick_sport not in PICK_MARKETS:
+        if not board.empty:
+            show_best_picks_board(board, pick_sport, (pick_sport, tuple(board_ids)))
         st.info(f'Automated sportsbook comparisons for {pick_sport} are pending.')
     else:
         allowed_markets = PICK_MARKETS[pick_sport].split(',')
@@ -1309,7 +1451,7 @@ with best:
         if not api_key:
             st.info('Enter an Odds API key to compare lines.')
         saved = st.session_state.get('prizepicks_matches')
-        if pick_sport == 'NBA' and not live_board and not board.empty and (
+        if not live_board and not board.empty and (
             not saved or saved[0] != pick_scope
         ):
             show_best_picks_board(board, pick_sport, pick_scope)
