@@ -57,6 +57,55 @@ def configured_key():
         return os.getenv('ODDS_API_KEY', '')
 
 
+RESEARCH_LINKS = {
+    'NBA': (
+        ('Player stats', 'NBA Stats', 'https://www.nba.com/stats/players/traditional', 'Minutes, points, rebounds and assists.'),
+        ('Injury report', 'NBA Official Injury Report', 'https://official.nba.com/nba-injury-report-2026-27-season/', '2026–27 league reports. Open the latest report for your game.'),
+    ),
+    'NFL': (
+        ('Player stats', 'NFL Player Stats', 'https://www.nfl.com/stats/player-stats/', 'Passing, rushing and receiving.'),
+        ('Injury report', 'NFL Injury Report', 'https://www.nfl.com/injuries/', 'Weekly practice participation and game status by matchup.'),
+    ),
+    'CBB': (
+        ('Player stats', 'NCAA Division I Men’s Basketball Stats', 'https://www.ncaa.com/stats/basketball-men/d1', 'Player and team leaderboards.'),
+        ('Availability', 'SEC Student-Athlete Availability Reports', 'https://www.secsports.com/reports', 'SEC coverage. For other games, check the conference and team announcements.'),
+    ),
+    'CFB': (
+        ('Player stats', 'NCAA FBS Stats', 'https://www.ncaa.com/stats/football/fbs', 'Player and team leaderboards.'),
+        ('Availability', 'SEC Football Availability Reports', 'https://www.secsports.com/fbreports', 'SEC coverage. For other games, check the conference and team announcements.'),
+    ),
+    'MLB': (
+        ('Player stats', 'Baseball Savant', 'https://baseballsavant.mlb.com/', 'Statcast hitting and pitching metrics.'),
+        ('Injury report', 'MLB Injury Report', 'https://www.mlb.com/injury-report', 'Team-by-team injury updates.'),
+        ('Lineups', 'MLB Starting Lineups', 'https://www.mlb.com/starting-lineups', 'Batting orders and starting pitchers as posted.'),
+    ),
+    'CS2': (
+        ('Player stats', 'HLTV Stats', 'https://www.hltv.org/stats', 'Player and map statistics.'),
+        ('Roster checks', 'HLTV Matches', 'https://www.hltv.org/matches', 'Check match lineups and stand-ins against organizer or team announcements.'),
+    ),
+    'Tennis': (
+        ('Player stats', 'WTA Stats Hub', 'https://www.wtatennis.com/stats', 'Serve and return statistics.'),
+        ('Player stats', 'ATP Stats', 'https://www.atptour.com/en/stats', 'ATP tour statistics.'),
+        ('Withdrawals and updates', 'WTA News', 'https://www.wtatennis.com/news', 'Check tour news and the tournament draw for withdrawals.'),
+        ('Withdrawals and updates', 'ATP News', 'https://www.atptour.com/en/news', 'Check tour news and the tournament draw for withdrawals.'),
+    ),
+    'Cricket': (
+        ('Player stats', 'ICC Player Rankings', 'https://www.icc-cricket.com/rankings/index', 'International player rankings by format.'),
+        ('Squad updates', 'ICC News', 'https://www.icc-cricket.com/news', 'Check squad changes and the official match lineup at the toss.'),
+    ),
+    'PGA Golf': (
+        ('Player stats', 'PGA TOUR Stats', 'https://www.pgatour.com/stats', 'Strokes gained, scoring and other tour statistics.'),
+        ('Field and withdrawals', 'PGA TOUR Tournaments', 'https://www.pgatour.com/tournaments', 'Open the tournament and check the latest field and leaderboard updates.'),
+    ),
+}
+
+
+def show_research_links(sport):
+    for category, label, url, description in RESEARCH_LINKS[sport]:
+        st.markdown(f'**{category}** · [{label}]({url})  \n{description}')
+    st.caption('Open the source for current status. These links use no odds credits and do not change the rankings.')
+
+
 def init_db():
     with sqlite3.connect(DB) as c:
         c.execute('CREATE TABLE IF NOT EXISTS picks (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, sport TEXT, event TEXT, player TEXT, market TEXT, line REAL, side TEXT, model_prob REAL, market_prob REAL, edge REAL, platform TEXT, payout_multiplier REAL, status TEXT DEFAULT "Pending", actual REAL, closing_line REAL, notes TEXT)')
@@ -388,6 +437,8 @@ with best:
         board_ids.append(sha256(upload.getvalue()).hexdigest())
 
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS)
+    with st.expander(f'{pick_sport} stats and availability'):
+        show_research_links(pick_sport)
     pick_region = st.selectbox('Sportsbook region', ['us', 'us2', 'uk', 'eu', 'au'])
     board = pd.DataFrame(columns=template.columns)
     if boards:
@@ -623,7 +674,9 @@ with research:
                 row['odds_coverage'] = 'No active catalog entries'
     st.dataframe(coverage, hide_index=True, use_container_width=True)
     st.caption('Catalog entries describe competitions. PGA Golf entries are major-winner futures. Player-prop availability varies by market and bookmaker.')
-    sport = st.selectbox('Research source links', ALL_SPORTS)
+    sport = st.selectbox('Research sport', ALL_SPORTS)
+    show_research_links(sport)
+    st.markdown('**Candidate data integrations**')
     source = SOURCES[sport]
     for label, url in zip(source.research_sources, source.source_urls):
         st.markdown(f'[{label}]({url})')
