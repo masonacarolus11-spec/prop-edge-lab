@@ -288,7 +288,7 @@ def compare_live_event(data, event, markets):
     )
 
 
-def load_live_prizepicks(key, sport, region, event_limit):
+def load_live_prizepicks(key, sport, regions, event_limit, markets, compare):
     events = fetch_events(key, SPORTS[sport])
     now = dt.datetime.now(dt.timezone.utc)
     upcoming = []
@@ -306,9 +306,11 @@ def load_live_prizepicks(key, sport, region, event_limit):
     for _, event in selected:
         try:
             data, remaining = fetch_event_odds(
-                key, SPORTS[sport], event['id'], f'{region},us_dfs', PICK_MARKETS[sport]
+                key, SPORTS[sport], event['id'], regions, ','.join(markets)
             )
-            frame = compare_live_event(data, event, PICK_MARKETS[sport].split(','))
+            frame = compare_live_event(data, event, markets)
+            if not compare and not frame.empty:
+                frame['status'] = 'PrizePicks line only'
         except ProviderError as exc:
             issues.append(f'{event_label(event)} — {exc}')
             if exc.code in ('access_denied', 'rate_limited'):
@@ -408,16 +410,24 @@ with best:
             st.caption('Use Away Team at Home Team for event and PrizePicks for platform.')
         if boards and board.empty:
             st.info(f'The uploads contain no {pick_sport} lines.')
-        event_limit = st.slider('Maximum games to scan', min_value=1, max_value=12, value=3)
-        credits = event_limit * len(allowed_markets) * (2 if live_board else 1)
-        st.caption(f'This scan can use up to {credits} provider credits.')
-        pick_scope = (key_id, pick_sport, pick_region, live_board, tuple(board_ids), event_limit)
-        action = 'Load and compare PrizePicks lines' if live_board else 'Compare PrizePicks lines'
-        if st.button(action, disabled=not api_key or (not live_board and board.empty)):
+        event_limit = st.slider('Maximum games to scan', min_value=1, max_value=12, value=1)
+        compare = True
+        scan_markets = allowed_markets
+        if live_board:
+            scan_markets = st.multiselect('Markets to load', allowed_markets, default=allowed_markets[:1])
+            compare = st.checkbox('Compare with sportsbooks', value=True,
+                                  help='Turn off to load PrizePicks lines at half the maximum credit cost.')
+        regions = (f'{pick_region},us_dfs' if compare else 'us_dfs') if live_board else pick_region
+        credits = event_limit * len(scan_markets) * len(regions.split(','))
+        st.caption(f'Maximum cost: {credits} provider credits. Identical requests can reuse cached odds for five minutes.')
+        pick_scope = (key_id, pick_sport, regions, live_board, tuple(board_ids), event_limit,
+                      tuple(scan_markets))
+        action = 'Load PrizePicks lines' if live_board else 'Compare PrizePicks lines'
+        if st.button(action, disabled=not api_key or not scan_markets or (not live_board and board.empty)):
             st.session_state.pop('prizepicks_matches', None)
             try:
                 with st.spinner('Comparing PrizePicks lines…'):
-                    result = (load_live_prizepicks(api_key, pick_sport, pick_region, event_limit)
+                    result = (load_live_prizepicks(api_key, pick_sport, regions, event_limit, scan_markets, compare)
                               if live_board else
                               scan_top_picks(api_key, pick_sport, pick_region, board, event_limit))
                 st.session_state['prizepicks_matches'] = (pick_scope, result)
@@ -435,7 +445,11 @@ with best:
                 st.info('No PrizePicks lines returned for the selected games and markets.')
             else:
                 matched = picks['status'].eq('Matched').sum()
-                st.caption(f'{matched} of {len(picks)} PrizePicks lines matched.')
+                if compare:
+                    st.caption(f'{matched} of {len(picks)} PrizePicks lines matched.')
+                else:
+                    st.caption(f'{len(picks)} PrizePicks lines loaded.')
+                    picks = picks.drop(columns=['side', 'market_estimate_pct', 'comparison_books'])
                 st.dataframe(picks, hide_index=True, use_container_width=True)
                 st.download_button('Download all comparison results', picks.to_csv(index=False),
                                    f'{pick_sport.lower()}_prizepicks.csv', mime='text/csv')
