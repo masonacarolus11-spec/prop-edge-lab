@@ -838,28 +838,46 @@ def load_nfl_availability(season, kind):
     response.raise_for_status()
     data = BytesIO(response.content)
     if kind == 'injuries':
-        frame = pd.read_csv(data, usecols=columns, dtype={'gsis_id': 'string'})
+        frame = pd.read_csv(data, usecols=lambda column: column in columns, dtype={'gsis_id': 'string'})
+        if not (set(columns) - {timestamp}).issubset(frame.columns):
+            raise ValueError('Unexpected NFL injury report columns')
         frame = frame.loc[frame['season_type'].eq('REG')].copy()
     else:
         frame = pd.read_parquet(data, columns=columns)
         frame['pos_rank'] = pd.to_numeric(frame['pos_rank'], errors='coerce')
-    frame['published_utc'] = pd.to_datetime(frame[timestamp], utc=True, errors='coerce')
-    return frame.dropna(subset=['published_utc'])
+    frame['published_utc'] = pd.to_datetime(frame.get(timestamp, pd.Series(pd.NaT, index=frame.index)),
+                                           utc=True, errors='coerce')
+    return frame if kind == 'injuries' else frame.dropna(subset=['published_utc'])
 
 
 def nfl_availability(injuries, depth, team, player_id, week, cutoff):
     evidence = {}
     if injuries is not None:
-        reports = injuries.loc[injuries['team'].eq(team) & injuries['week'].eq(week)
-                               & injuries['gsis_id'].eq(str(player_id))
-                               & injuries['published_utc'].le(cutoff)].sort_values('published_utc')
+        team_reports = injuries.loc[
+            injuries['team'].eq(team) & injuries['week'].eq(week)
+            & (injuries['published_utc'].isna() | injuries['published_utc'].le(cutoff))
+        ]
+        reports = team_reports.loc[team_reports['gsis_id'].eq(str(player_id))]
         if not reports.empty:
-            latest = reports.iloc[-1]
+            dated = reports.loc[reports['published_utc'].notna()]
+            if not dated.empty:
+                newest = dated['published_utc'].max()
+                reports = dated.loc[dated['published_utc'].eq(newest)]
+                evidence['NFL injury report time (UTC)'] = newest.isoformat()
+            def status_priority(report):
+                status = str(report['report_status']).strip().casefold()
+                practice = str(report['practice_status']).strip().casefold()
+                return (
+                    {'out': 4, 'ir': 4, 'injured reserve': 4, 'doubtful': 3, 'questionable': 2}.get(status, 0),
+                    'did not participate' in practice or practice == 'dnp',
+                )
+            latest = max(reports.to_dict('records'), key=status_priority)
             status = latest['report_status']
             practice = latest['practice_status']
             evidence['Injury report status'] = str(status) if pd.notna(status) and str(status).strip() else 'No game designation reported'
             evidence['Practice status'] = str(practice) if pd.notna(practice) else None
-            evidence['NFL injury report time (UTC)'] = latest['published_utc'].isoformat()
+        elif team_reports.empty:
+            evidence['Injury report status'] = 'No team report found for this matchup week'
         else:
             evidence['Injury report status'] = 'No player entry found for this matchup week'
     else:
