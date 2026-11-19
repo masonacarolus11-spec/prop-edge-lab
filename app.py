@@ -734,59 +734,72 @@ def show_pick_evaluation(row):
         st.info('No verified data is available to evaluate this line.')
 
 
-def selectable_prop_table(picks, key):
+def selectable_prop_table(picks, key, columns=None):
     st.caption('Click a row to see its evaluation.')
     selection = st.dataframe(picks, key=key, on_select='rerun', selection_mode='single-row',
-                             hide_index=True, use_container_width=True, height=280)
+                             hide_index=True, use_container_width=True, height=320, column_order=columns)
     return next(iter(selection.selection.rows), None)
 
 
-def show_auto_nba_board(picks, board_scope, selected_index=None):
-    scope = sha256((repr(board_scope) + picks.to_json() + str(int(dt.datetime.now(dt.timezone.utc).timestamp()) // 900)).encode()).hexdigest()[:16]
-    with st.expander('Automatic NBA research', expanded=True):
-        st.caption('Season, recent and matchup stats from NBA game logs via SportsDataverse. Uses zero Odds API credits.')
-        saved = st.session_state.get('auto_nba_board')
-        if not saved or saved[0] != scope:
-            try:
-                today = dt.datetime.now(ZoneInfo('America/New_York')).date()
-                season = today.year + int(today.month >= 9)
-                with st.spinner('Checking NBA game logs…'):
-                    logs = load_nba_game_log(season)
-                    try:
-                        injuries = load_nba_injury_report(season)
-                    except (requests.RequestException, ValueError, KeyError, TypeError):
-                        injuries = None
-                    try:
-                        role_history = load_nba_role_history(season)
-                    except (requests.RequestException, ValueError, KeyError, ImportError, TypeError):
-                        role_history = None
-                    rows = []
-                    for _, row in picks.iterrows():
-                        start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
-                        date = today if pd.isna(start) else start.tz_convert('America/New_York').date()
-                        context = nba_automatic_context(logs[logs['game_date'] < date], row, date, injuries, role_history)
-                        rows.append({**row.to_dict(), **context})
-                saved = (scope, pd.DataFrame(rows))
-                st.session_state['auto_nba_board'] = saved
-            except (requests.RequestException, ValueError, KeyError, TypeError):
-                st.error('NBA game logs are temporarily unavailable from the source.')
-                if selected_index is not None and selected_index < len(picks):
-                    show_pick_evaluation(picks.iloc[selected_index])
-                return
-        if selected_index is not None and selected_index < len(saved[1]):
-            st.markdown('**Selected line evaluation**')
-            show_pick_evaluation(saved[1].iloc[selected_index])
-        auto_index = selectable_prop_table(saved[1], f'auto_nba_table:{scope}')
-        if selected_index is None and auto_index is not None and auto_index < len(saved[1]):
-            show_pick_evaluation(saved[1].iloc[auto_index])
-        st.download_button('Download automatic NBA research', saved[1].to_csv(index=False),
-                           'nba_automatic_research.csv', mime='text/csv')
-        st.caption('Defense rank 1 allows the least. Position ranks use broad guard, forward and center groups. Usage is estimated from box-score possessions. Recent starts estimate the role. Check confirmed lineups separately. Missing injury entries leave availability unconfirmed.')
+def automatic_nba_board(picks, board_scope):
+    freshness = int(dt.datetime.now(dt.timezone.utc).timestamp()) // 900
+    scope = sha256((repr(board_scope) + picks.to_json() + str(freshness)).encode()).hexdigest()[:16]
+    saved = st.session_state.get('auto_nba_board')
+    if not saved or saved[0] != scope:
+        try:
+            today = dt.datetime.now(ZoneInfo('America/New_York')).date()
+            season = today.year + int(today.month >= 9)
+            with st.spinner('Checking NBA game logs…'):
+                logs = load_nba_game_log(season)
+                try:
+                    injuries = load_nba_injury_report(season)
+                except (requests.RequestException, ValueError, KeyError, TypeError):
+                    injuries = None
+                try:
+                    role_history = load_nba_role_history(season)
+                except (requests.RequestException, ValueError, KeyError, ImportError, TypeError):
+                    role_history = None
+                rows = []
+                for _, row in picks.iterrows():
+                    start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
+                    date = today if pd.isna(start) else start.tz_convert('America/New_York').date()
+                    context = nba_automatic_context(logs[logs['game_date'] < date], row, date, injuries, role_history)
+                    rows.append({**row.to_dict(), **context})
+            saved = (scope, pd.DataFrame(rows))
+            st.session_state['auto_nba_board'] = saved
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            st.error('NBA game logs are temporarily unavailable from the source.')
+            return picks
+    return saved[1]
 
 
-def show_board_research(picks, sport, board_scope):
+def show_best_picks_board(picks, sport, board_scope):
+    full_board = automatic_nba_board(picks, board_scope) if sport == 'NBA' else picks
+    columns = [
+        'player', 'market', 'line', 'Model signal', 'Projected stat',
+        'side', 'market_estimate_pct', 'comparison_books', 'Auto status', 'Injury report status',
+        'status', 'event',
+    ]
+    visible = [column for column in columns if column in full_board]
+    table_key = sha256((repr(board_scope) + picks.to_json()).encode()).hexdigest()[:18]
+    selected = selectable_prop_table(full_board, f'best_picks:{table_key}', visible)
+    if selected is not None and selected < len(full_board):
+        row = full_board.iloc[selected]
+        st.subheader('Selected prop evaluation')
+        show_pick_evaluation(row)
+        with st.expander('Full stats and market details'):
+            details = row.drop(labels=['event_id'], errors='ignore').dropna()
+            st.dataframe(details.astype(str).rename('Value'), use_container_width=True)
+    st.download_button('Download Best picks board with research', full_board.to_csv(index=False),
+                       f'{sport.lower()}_best_picks.csv', mime='text/csv')
+    if sport == 'NBA':
+        st.caption('NBA projections use game logs and injury reports via SportsDataverse. Roles and usage are estimates. Defense rank 1 allows the least. No extra odds credits are used.')
+    show_board_research(full_board, sport, board_scope, selected)
+
+
+def show_board_research(picks, sport, board_scope, selected_index=None):
     with st.expander('Research a line on this board'):
-        st.caption('Choose a PrizePicks line and add your research. Saved reviews appear below the board in this session.')
+        st.caption('Add your own research to a board line. Saved reviews appear here for this session.')
         lines = picks.reset_index(drop=True)
 
         def describe(index):
@@ -794,8 +807,12 @@ def show_board_research(picks, sport, board_scope):
             return f"{row['player']} · {row['market']} {row['line']:g} · {row['event']}"
 
         board_key = sha256(repr(board_scope).encode()).hexdigest()[:16]
-        index = st.selectbox('PrizePicks line to research', range(len(lines)), format_func=describe,
-                             key=f'board_research:{board_key}:line')
+        if selected_index is None:
+            index = st.selectbox('PrizePicks line to research', range(len(lines)), format_func=describe,
+                                 key=f'board_research:{board_key}:line')
+        else:
+            index = selected_index
+            st.caption(describe(index))
         row = lines.iloc[index]
         identifier = (sport, row['event'], row['player'], row['market'], float(row['line']),
                       row.get('starts_utc', ''))
@@ -1248,7 +1265,7 @@ with best:
             identity[column] = identity[column].astype(str).str.strip().str.casefold()
         all_lines = all_lines.loc[~identity.duplicated()]
         st.caption(f'{len(all_lines)} unique PrizePicks lines across all uploads.')
-        with st.expander('View every imported line', expanded=True):
+        with st.expander('View every imported line'):
             st.dataframe(all_lines, hide_index=True, use_container_width=True)
         board = all_lines[identity.loc[all_lines.index, 'sport'].eq(pick_sport.casefold())]
 
@@ -1295,7 +1312,7 @@ with best:
         if pick_sport == 'NBA' and not live_board and not board.empty and (
             not saved or saved[0] != pick_scope
         ):
-            show_auto_nba_board(board, pick_scope)
+            show_best_picks_board(board, pick_sport, pick_scope)
         if saved and saved[0] == pick_scope:
             picks, checked, targeted, issues = saved[1]
             st.caption(f'{checked} of {targeted} selected games checked.')
@@ -1310,15 +1327,7 @@ with best:
                 else:
                     st.caption(f'{len(picks)} PrizePicks lines loaded.')
                     picks = picks.drop(columns=['side', 'market_estimate_pct', 'comparison_books'])
-                table_key = sha256((repr(pick_scope) + picks.to_json()).encode()).hexdigest()[:18]
-                selected_index = selectable_prop_table(picks, f'prizepicks_table:{table_key}')
-                st.download_button('Download all comparison results', picks.to_csv(index=False),
-                                   f'{pick_sport.lower()}_prizepicks.csv', mime='text/csv')
-                if pick_sport == "NBA":
-                    show_auto_nba_board(picks, pick_scope, selected_index)
-                elif selected_index is not None and selected_index < len(picks):
-                    show_pick_evaluation(picks.iloc[selected_index])
-                show_board_research(picks, pick_sport, pick_scope)
+                show_best_picks_board(picks, pick_sport, pick_scope)
 
 with tab1:
     st.subheader('Live sportsbook market discovery')
