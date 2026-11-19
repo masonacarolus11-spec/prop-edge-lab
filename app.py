@@ -710,6 +710,10 @@ def pick_evaluation(row):
                            + (f' (rank {rank}, 1 allows the least).' if rank else '.'))
         if value('Injury report status'):
             factors.append(f"Injury report: {value('Injury report status')}. Starting lineup is unverified.")
+        if value('Practice status'):
+            factors.append(f"NFL practice report: {value('Practice status')}.")
+        if value('Latest depth chart'):
+            factors.append(f"Latest team depth chart: {value('Latest depth chart')}.")
         if value('Estimated role'):
             factors.append(f"Estimated role: {value('Estimated role')} based on recent starts.")
     elif status:
@@ -816,7 +820,67 @@ def load_nfl_history(season):
     return stats, games
 
 
-def nfl_automatic_context(stats, games, row, today):
+@st.cache_data(ttl=900, max_entries=4, show_spinner=False)
+def load_nfl_availability(season, kind):
+    from io import BytesIO
+
+    root = 'https://github.com/nflverse/nflverse-data/releases/download'
+    if kind == 'injuries':
+        file = f'injuries_{season}.csv'
+        columns = ['team', 'week', 'season_type', 'gsis_id', 'report_status',
+                   'practice_status', 'date_modified']
+        timestamp = 'date_modified'
+    else:
+        file = f'depth_charts_{season}.parquet'
+        columns = ['team', 'gsis_id', 'dt', 'pos_abb', 'pos_rank']
+        timestamp = 'dt'
+    response = requests.get(f'{root}/{kind}/{file}', timeout=(5, 15))
+    response.raise_for_status()
+    data = BytesIO(response.content)
+    if kind == 'injuries':
+        frame = pd.read_csv(data, usecols=columns, dtype={'gsis_id': 'string'})
+        frame = frame.loc[frame['season_type'].eq('REG')].copy()
+    else:
+        frame = pd.read_parquet(data, columns=columns)
+        frame['pos_rank'] = pd.to_numeric(frame['pos_rank'], errors='coerce')
+    frame['published_utc'] = pd.to_datetime(frame[timestamp], utc=True, errors='coerce')
+    return frame.dropna(subset=['published_utc'])
+
+
+def nfl_availability(injuries, depth, team, player_id, week, cutoff):
+    evidence = {}
+    if injuries is not None:
+        reports = injuries.loc[injuries['team'].eq(team) & injuries['week'].eq(week)
+                               & injuries['gsis_id'].eq(str(player_id))
+                               & injuries['published_utc'].le(cutoff)].sort_values('published_utc')
+        if not reports.empty:
+            latest = reports.iloc[-1]
+            status = latest['report_status']
+            practice = latest['practice_status']
+            evidence['Injury report status'] = str(status) if pd.notna(status) and str(status).strip() else 'No game designation reported'
+            evidence['Practice status'] = str(practice) if pd.notna(practice) else None
+            evidence['NFL injury report time (UTC)'] = latest['published_utc'].isoformat()
+        else:
+            evidence['Injury report status'] = 'No player entry found for this matchup week'
+    else:
+        evidence['Injury report status'] = 'Injury feed unavailable'
+    if depth is not None:
+        charts = depth.loc[depth['team'].eq(team) & depth['published_utc'].le(cutoff)]
+        newest = charts['published_utc'].max()
+        if pd.notna(newest) and cutoff - newest <= pd.Timedelta(days=7):
+            player = charts.loc[charts['published_utc'].eq(newest)
+                                & charts['gsis_id'].astype('string').eq(str(player_id))]
+            roles = player[['pos_abb', 'pos_rank']].dropna().drop_duplicates()
+            if not roles.empty:
+                evidence['Latest depth chart'] = ', '.join(
+                    f'{position} rank {rank:g}' for position, rank in
+                    roles.itertuples(index=False, name=None)
+                )
+                evidence['NFL depth chart time (UTC)'] = newest.isoformat()
+    return evidence
+
+
+def nfl_automatic_context(stats, games, row, today, injuries=None, depth=None, now=None):
     settings = NFL_STATS.get(row['market'])
     teams = str(row['event']).split(' at ', 1)
     codes = [NFL_TEAM_CODES.get(team.lower().strip().split()[-1]) if team.strip() else None
@@ -832,7 +896,8 @@ def nfl_automatic_context(stats, games, row, today):
         upcoming = upcoming.loc[upcoming['gameday'].eq(date)]
     if len(upcoming) != 1:
         return {'Auto status': 'Could not verify a single upcoming NFL game'}
-    date = upcoming.iloc[0]['gameday']
+    game = upcoming.iloc[0]
+    date = game['gameday']
     history = stats.loc[stats['gameday'].lt(date)]
     player = history.loc[history['name_key'].eq(nba_name_key(row['player'])) & history[stat].notna()]
     player = player.sort_values(['gameday', 'game_id'])
@@ -860,13 +925,22 @@ def nfl_automatic_context(stats, games, row, today):
     if opponent in eligible.index and eligible.mean() > 0:
         rank = f'{int(eligible.rank(method="min")[opponent])}/{len(eligible)}'
         projection *= 1 + max(-0.08, min(0.08, 0.25 * (eligible[opponent] / eligible.mean() - 1)))
+    now = now if now is not None else pd.Timestamp.now(tz='UTC')
+    cutoff = min(now, start) if pd.notna(start) else now
+    availability = nfl_availability(injuries, depth, team, player.iloc[-1]['player_id'],
+                                    game.get('week'), cutoff)
+    designation = availability['Injury report status'].strip().casefold()
+    hold = designation in {'out', 'doubtful', 'questionable', 'ir', 'injured reserve'}
+    if not hold and designation == 'no game designation reported':
+        practice = (availability.get('Practice status') or '').casefold()
+        hold = 'did not participate' in practice or practice.strip() == 'dnp'
     sigma = float(player[stat].std())
     line = float(row['line'])
-    model_over = 100 * prob_model(projection, sigma, line, 'Over', 'Normal') if sigma > 0 and not line.is_integer() else None
+    model_over = 100 * prob_model(projection, sigma, line, 'Over', 'Normal') if not hold and sigma > 0 and not line.is_integer() else None
     lean = gap = None
     odds = row.get('market_estimate_pct')
     side = row.get('side')
-    if pd.notna(odds) and side in ('Over', 'Under') and sigma > 0:
+    if not hold and pd.notna(odds) and side in ('Over', 'Under') and sigma > 0:
         over = (odds if side == 'Over' else 100 - odds) / 100
         lean, gap = research_pick_signal(projection, sigma, line, 'Normal', over, False)
         if lean.startswith('Model lean'):
@@ -875,7 +949,9 @@ def nfl_automatic_context(stats, games, row, today):
             elif row.get('Lopsided game flag') == 'Elevated':
                 lean = 'Recheck — large market spread could change late-game play calling.'
     return {
-        'Auto status': 'Pregame NFL model · lineup and injuries unverified',
+        'Auto status': ('Hold · check NFL injury or practice status' if hold else
+                        'Pregame NFL model · starting lineup unconfirmed'),
+        **availability,
         'Season average': round(season_mean, 2), 'Last five average': round(recent_mean, 2),
         'Season opportunities per game': round(float(player[opportunities].mean()), 2),
         'Recent opportunities per game': round(float(recent[opportunities].mean()), 2),
@@ -892,7 +968,7 @@ def nfl_automatic_context(stats, games, row, today):
 def automatic_nfl_board(picks, board_scope):
     today = dt.datetime.now(ZoneInfo('America/New_York')).date()
     season = today.year - int(today.month < 7)
-    freshness = int(dt.datetime.now(dt.timezone.utc).timestamp()) // 3600
+    freshness = int(dt.datetime.now(dt.timezone.utc).timestamp()) // 900
     scope = sha256((repr(board_scope) + picks.to_json() + str(freshness)).encode()).hexdigest()[:16]
     saved = st.session_state.get('auto_nfl_board')
     if saved and saved[0] == scope:
@@ -900,7 +976,15 @@ def automatic_nfl_board(picks, board_scope):
     try:
         with st.spinner('Checking NFL game history…'):
             stats, games = load_nfl_history(season)
-            records = [{**row.to_dict(), **nfl_automatic_context(stats, games, row, today)}
+            availability_sources = []
+            for kind in ('injuries', 'depth_charts'):
+                try:
+                    availability_sources.append(load_nfl_availability(season, kind))
+                except (requests.RequestException, ValueError, KeyError, ImportError, TypeError):
+                    availability_sources.append(None)
+            injuries, depth = availability_sources
+            records = [{**row.to_dict(), **nfl_automatic_context(stats, games, row, today,
+                                                                injuries, depth)}
                        for _, row in picks.iterrows()]
     except (requests.RequestException, ValueError, KeyError, TypeError):
         st.warning('NFL game history is unavailable. Sportsbook comparisons are still shown.')
@@ -933,7 +1017,7 @@ def show_best_picks_board(picks, sport, board_scope):
     if sport == 'NBA':
         st.caption('NBA projections use game logs and injury reports via SportsDataverse. Roles and usage are estimates. Defense rank 1 allows the least. No extra odds credits are used.')
     if sport == 'NFL':
-        st.caption('NFL projections use nflverse regular-season game data. Check current injuries, lineups and weather separately. No extra odds credits are used.')
+        st.caption('NFL research checks game logs, weekly injury and practice reports, and recent depth charts via nflverse. A missing report leaves availability unconfirmed. Depth chart rank does not confirm the starting lineup. No extra odds credits are used.')
     show_board_research(full_board, sport, board_scope, selected)
 
 
