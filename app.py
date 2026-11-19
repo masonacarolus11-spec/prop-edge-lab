@@ -2,27 +2,52 @@ import os, sqlite3, math, json, datetime as dt
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import requests
+from hashlib import sha256
 import streamlit as st
 from scipy.stats import norm, poisson
+from odds_provider import OddsAPI, ProviderError
+from sport_sources import SOURCES, competitions, source_rows
 
 st.set_page_config(page_title='Prop Edge Lab', page_icon='📈', layout='wide')
 st.title('📈 Prop Edge Lab')
 st.caption('Research prototype • paper testing only • no automatic bets • no guaranteed returns')
 DB = Path(os.getenv('PROP_DB', 'prop_scanner.sqlite'))
-SPORTS = {'NBA':'basketball_nba','CBB':'basketball_ncaab','NFL':'americanfootball_nfl','CFB':'americanfootball_ncaaf','MLB':'baseball_mlb'}
-ALL_SPORTS = ['NBA','CBB','NFL','CFB','CS2','Tennis','Cricket','MLB','PGA Golf']
+SPORTS = {sport: source.odds_key for sport, source in SOURCES.items() if source.odds_key}
+ALL_SPORTS = list(SOURCES)
 
-@st.cache_data(ttl=300,show_spinner=False)
+
+@st.cache_resource(max_entries=64, show_spinner=False)
+def odds_client(key):
+    return OddsAPI(key)
+
+
+@st.cache_data(ttl=3600, max_entries=64, show_spinner=False)
+def fetch_catalog(key):
+    return odds_client(key).catalog()
+
+
+@st.cache_data(ttl=600, max_entries=256, show_spinner=False)
 def fetch_events(key, sport):
-    url=f'https://api.the-odds-api.com/v4/sports/{sport}/events'
-    r=requests.get(url,params={'apiKey':key},timeout=15); r.raise_for_status(); return r.json()
+    return odds_client(key).events(sport)
 
-@st.cache_data(ttl=300,show_spinner=False)
-def fetch_event_odds(key,sport,event_id,regions,markets):
-    url=f'https://api.the-odds-api.com/v4/sports/{sport}/events/{event_id}/odds'
-    r=requests.get(url,params={'apiKey':key,'regions':regions,'markets':markets,'oddsFormat':'american'},timeout=15)
-    r.raise_for_status(); return r.json(),dict(r.headers)
+
+@st.cache_data(ttl=300, max_entries=256, show_spinner=False)
+def fetch_event_odds(key, sport, event_id, regions, markets):
+    data, remaining = odds_client(key).get(
+        f'sports/{sport}/events/{event_id}/odds',
+        regions=regions, markets=markets, oddsFormat='american',
+    )
+    if not isinstance(data, dict) or not isinstance(data.get('bookmakers'), list):
+        raise ProviderError('invalid_response', 'The Odds API returned unexpected odds data.')
+    return data, remaining
+
+
+def configured_key():
+    try:
+        return st.secrets.get('ODDS_API_KEY', os.getenv('ODDS_API_KEY', ''))
+    except FileNotFoundError:
+        return os.getenv('ODDS_API_KEY', '')
+
 
 def init_db():
     with sqlite3.connect(DB) as c:
@@ -121,41 +146,53 @@ def add_pick(row):
 
 with st.sidebar:
     st.header('Configuration')
-    api_key=st.text_input('The Odds API key (optional)',value=st.secrets.get('ODDS_API_KEY','') if hasattr(st,'secrets') else '',type='password')
+    api_key=st.text_input('The Odds API key (optional)',value=configured_key(),type='password').strip()
     st.caption('Free tier has limited credits and may not include all player props. Check provider coverage and quotas before querying.')
     st.info('Streamlit Community Cloud local SQLite storage is ephemeral. Export CSV regularly. For persistent multi-device history, connect a hosted database later.')
     st.markdown('[Get an API key](https://the-odds-api.com/) · [Deploy Streamlit](https://share.streamlit.io/)')
 
-tab1,tab2,tab3,tab4=st.tabs(['🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup'])
+tab1,tab2,tab3,tab4,research=st.tabs(['🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup','Research sources'])
+key_id = sha256(api_key.encode()).hexdigest()
 with tab1:
     st.subheader('Live sportsbook market discovery')
     sport=st.selectbox('Sport',list(SPORTS),key='live_sport')
-    st.caption('CS2, tennis and cricket are supported by CSV/manual analysis; live event endpoints depend on your data provider.')
+    st.caption('See Research sources for all nine sports. The player-prop scanner supports the five leagues in this menu.')
     regions=st.selectbox('Odds region',['us','us2','uk','eu','au'])
     markets=st.text_input('Market keys supported by your plan/provider','player_points,player_rebounds,player_assists')
+    event_scope = (key_id, sport)
     if st.button('Fetch live events'):
+        st.session_state.pop('scoped_events', None)
+        st.session_state.pop('scoped_odds', None)
         if not api_key: st.error('Enter a provider API key first. No demo odds will be presented as live.')
         else:
             try:
-                events=fetch_events(api_key,SPORTS[sport]); st.session_state['events']=events
+                events = fetch_events(api_key, SPORTS[sport])
+                st.session_state['scoped_events'] = (event_scope, events)
                 st.success(f'{len(events)} events retrieved')
-            except Exception as e: st.error(f'Provider request failed: {e}')
-    events=st.session_state.get('events',[])
+            except ProviderError as exc: st.error(str(exc))
+    saved_scope, saved_events = st.session_state.get('scoped_events', (None, []))
+    events = saved_events if saved_scope == event_scope else []
+    odds_scope = None
     if events and api_key:
         options={f"{e.get('home_team')} vs {e.get('away_team')} • {e.get('commence_time')}":e['id'] for e in events}
         chosen=st.selectbox('Event',list(options))
+        odds_scope = (event_scope, options[chosen], regions, markets)
         if st.button('Fetch event player props (may consume API credits)'):
+            st.session_state.pop('scoped_odds', None)
             try:
-                data,headers=fetch_event_odds(api_key,SPORTS[sport],options[chosen],regions,markets)
+                data,remaining=fetch_event_odds(api_key,SPORTS[sport],options[chosen],regions,markets)
                 rows=[]
                 for book in data.get('bookmakers',[]):
                     for m in book.get('markets',[]):
                         for o in m.get('outcomes',[]):
                             rows.append({'book':book.get('title'),'market':m.get('key'),'player':o.get('description',''),'side':o.get('name'),'line':o.get('point'),'odds':o.get('price'),'updated':m.get('last_update')})
-                st.session_state['odds_df']=pd.DataFrame(rows)
-                st.caption('Remaining provider requests: '+str(headers.get('x-requests-remaining','not reported')))
-            except Exception as e: st.error(f'Odds unavailable: {e}. This may be a free-plan restriction or unsupported market.')
-    odds_df=st.session_state.get('odds_df',pd.DataFrame())
+                st.session_state['scoped_odds'] = (odds_scope, pd.DataFrame(rows))
+                st.caption(f'Remaining credits when fetched: {remaining or "not reported"}')
+                if not rows: st.info('No offers were returned for these markets.')
+            except ProviderError as exc: st.error(str(exc))
+            except (TypeError, AttributeError): st.error('The provider returned unexpected odds data.')
+    saved_scope, saved_odds = st.session_state.get('scoped_odds', (None, None))
+    odds_df = saved_odds if saved_scope == odds_scope and saved_odds is not None else pd.DataFrame()
     if not odds_df.empty:
         st.dataframe(odds_df,use_container_width=True)
         st.download_button('Export sportsbook snapshot',odds_df.to_csv(index=False),'sportsbook_snapshot.csv')
@@ -265,3 +302,31 @@ with tab4:
 - Multi-pick payout/EV modeling and automated settlement are future upgrades.
 - The system is a **research prototype**, not a validated predictive edge.
 ''')
+
+
+with research:
+    st.subheader('Research sources and provider coverage')
+    st.caption('All nine sports support manual evaluation. Player-stat adapters are pending.')
+    if st.button('Check active The Odds API coverage', disabled=not api_key):
+        st.session_state.pop('research_catalog', None)
+        try:
+            st.session_state['research_catalog'] = (key_id, fetch_catalog(api_key))
+        except ProviderError as exc:
+            st.error(str(exc))
+    if not api_key:
+        st.info('Enter an API key to check active odds coverage.')
+    catalog_key, catalog = st.session_state.get('research_catalog', (None, []))
+    coverage = source_rows()
+    for row in coverage:
+        sport = row['sport']
+        if catalog_key == key_id and row['odds_coverage'] == 'Catalog check pending':
+            matches = competitions(sport, catalog)
+            row['odds_coverage'] = ', '.join(item.get('title') or item['key'] for item in matches)
+            if not matches:
+                row['odds_coverage'] = 'No active catalog entries'
+    st.dataframe(coverage, hide_index=True, use_container_width=True)
+    st.caption('Catalog entries describe competitions. PGA Golf entries are major-winner futures. Player-prop availability varies by market and bookmaker.')
+    sport = st.selectbox('Research source links', ALL_SPORTS)
+    source = SOURCES[sport]
+    for label, url in zip(source.research_sources, source.source_urls):
+        st.markdown(f'[{label}]({url})')
