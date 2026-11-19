@@ -222,19 +222,19 @@ def nba_context_projection(season_stat, season_minutes, recent_stat, recent_minu
     return minutes_adjusted, minutes_adjusted * factor
 
 
-def nba_projection_inputs():
+def nba_projection_inputs(widget_scope='evaluate'):
     with st.expander('NBA lineup, minutes and matchup projection'):
-        enabled = st.checkbox('Use this NBA projection in the evaluator')
+        enabled = st.checkbox('Use this NBA projection in the evaluator', key=widget_scope + ':' + ('Use this NBA projection in the evaluator'))
         if not enabled:
             st.caption('Combine season and recent production per minute with tonight’s expected role.')
             return False, None, ''
         show_research_links('NBA')
         role = st.selectbox('Expected lineup role', ['Unconfirmed', 'Projected starter',
-                             'Confirmed starter', 'Bench', 'Out'])
-        position = st.selectbox('Position for opponent comparison', ['Unspecified', 'PG', 'SG', 'SF', 'PF', 'C'])
-        opponent = st.text_input('Opponent')
+                             'Confirmed starter', 'Bench', 'Out'], key=widget_scope + ':' + ('Expected lineup role'))
+        position = st.selectbox('Position for opponent comparison', ['Unspecified', 'PG', 'SG', 'SF', 'PF', 'C'], key=widget_scope + ':' + ('Position for opponent comparison'))
+        opponent = st.text_input('Opponent', key=widget_scope + ':' + ('Opponent'))
         rank = st.number_input('Opponent rank vs. this position', min_value=1, max_value=30,
-                               value=None, step=1, help='Use 1 for the fewest and 30 for the most allowed for this stat.')
+                               value=None, step=1, help='Use 1 for the fewest and 30 for the most allowed for this stat.', key=widget_scope + ':' + ('Opponent rank vs. this position'))
         if role == 'Out':
             st.info('Player marked out. The evaluator will skip this prop.')
             return True, None, ''
@@ -243,21 +243,21 @@ def nba_projection_inputs():
         st.caption('Enter averages for the same stat above. Use the same recent games for the stat and minutes averages.')
         season, recent = st.columns(2)
         with season:
-            season_stat = st.number_input('Season average for this stat', min_value=0.0, value=None)
-            season_minutes = st.number_input('Season minutes per game', min_value=0.1, value=None)
+            season_stat = st.number_input('Season average for this stat', min_value=0.0, value=None, key=widget_scope + ':' + ('Season average for this stat'))
+            season_minutes = st.number_input('Season minutes per game', min_value=0.1, value=None, key=widget_scope + ':' + ('Season minutes per game'))
         with recent:
-            recent_stat = st.number_input('Last 5 games average for this stat', min_value=0.0, value=None)
-            recent_minutes = st.number_input('Last 5 games minutes per game', min_value=0.1, value=None)
+            recent_stat = st.number_input('Last 5 games average for this stat', min_value=0.0, value=None, key=widget_scope + ':' + ('Last 5 games average for this stat'))
+            recent_minutes = st.number_input('Last 5 games minutes per game', min_value=0.1, value=None, key=widget_scope + ':' + ('Last 5 games minutes per game'))
         expected_minutes = st.number_input('Expected minutes tonight', min_value=0.1, max_value=60.0,
-                                           value=None)
-        recent_weight = st.slider('Recent form weight (%)', 0, 100, 40)
+                                           value=None, key=widget_scope + ':' + ('Expected minutes tonight'))
+        recent_weight = st.slider('Recent form weight (%)', 0, 100, 40, key=widget_scope + ':' + ('Recent form weight (%)'))
         opponent_allowed = league_allowed = None
-        if st.checkbox('Adjust for opponent defense'):
+        if st.checkbox('Adjust for opponent defense', key=widget_scope + ':' + ('Adjust for opponent defense')):
             st.caption('Use the same stat, position and time window for both averages.')
             opponent_allowed = st.number_input('Opponent average allowed vs. position',
-                                               min_value=0.0, value=None)
+                                               min_value=0.0, value=None, key=widget_scope + ':' + ('Opponent average allowed vs. position'))
             league_allowed = st.number_input('League average allowed vs. position',
-                                             min_value=0.1, value=None)
+                                             min_value=0.1, value=None, key=widget_scope + ':' + ('League average allowed vs. position'))
             if not opponent.strip() or position == 'Unspecified' or None in (opponent_allowed, league_allowed):
                 st.info('Enter the opponent, position and both allowed averages to apply the matchup adjustment.')
                 return True, None, ''
@@ -314,13 +314,14 @@ def research_pick_signal(mean, sigma, line, distribution, market_over, moved):
     return ('Model lean: More' if gap > 0 else 'Model lean: Less'), gap
 
 
-def pick_research_inputs(sport, baseline, sigma, line, distribution, nba_context_used):
+def pick_research_inputs(sport, baseline, sigma, line, distribution, nba_context_used,
+                         widget_scope='evaluate', enabled_by_default=False):
     with st.expander('Research factors, sportsbook odds and line movement'):
-        if not st.checkbox('Use research factors in this evaluation'):
-            return baseline, None, ''
+        if not st.checkbox('Use research factors in this evaluation', value=enabled_by_default, key=widget_scope + ':' + ('Use research factors in this evaluation')):
+            return baseline, None, '', None
         if baseline is None:
             st.info('Finish the baseline projection first.')
-            return baseline, None, ''
+            return baseline, None, '', None
 
         if sport == 'NBA':
             st.markdown('Use [NBA advanced player stats](https://www.nba.com/stats/players/advanced) for usage-rate context.')
@@ -329,14 +330,14 @@ def pick_research_inputs(sport, baseline, sigma, line, distribution, nba_context
         st.caption('Enter evidence-based changes to expected production. Leave unknown factors blank and avoid entering an adjustment already included in the baseline.')
         independent = st.number_input('Second statistical projection (optional)',
                                       min_value=0.0, value=None,
-                                      help='Blended equally with the baseline. Leave blank if it relies on the same model.')
+                                      help='Blended equally with the baseline. Leave blank if it relies on the same model.', key=widget_scope + ':' + ('Second statistical projection (optional)'))
         left, right = st.columns(2)
         with left:
             reference = st.number_input('Baseline usage or opportunity share (%)',
-                                        min_value=0.1, max_value=100.0, value=None)
+                                        min_value=0.1, max_value=100.0, value=None, key=widget_scope + ':' + ('Baseline usage or opportunity share (%)'))
         with right:
             expected = st.number_input('Expected usage or opportunity share (%)',
-                                       min_value=0.0, max_value=100.0, value=None)
+                                       min_value=0.0, max_value=100.0, value=None, key=widget_scope + ':' + ('Expected usage or opportunity share (%)'))
         if (reference is None) != (expected is None):
             st.info('Enter both usage shares to apply a usage adjustment.')
         adjustments = []
@@ -345,7 +346,7 @@ def pick_research_inputs(sport, baseline, sigma, line, distribution, nba_context
             st.caption('If you already applied the NBA defense adjustment above, leave the opponent adjustment blank.')
         for label, help_text in CONTEXT_FACTORS:
             change = st.number_input(f'{label} adjustment (%)', min_value=-20.0,
-                                     max_value=20.0, value=None, step=1.0, help=help_text)
+                                     max_value=20.0, value=None, step=1.0, help=help_text, key=widget_scope + ':' + ('factor:' + label))
             if change is not None:
                 adjustments.append(change)
                 evidence.append(f'{label} {change:+g}%')
@@ -359,17 +360,17 @@ def pick_research_inputs(sport, baseline, sigma, line, distribution, nba_context
         else:
             st.caption('With the Poisson model, variance equals the adjusted mean.')
 
-        opening = st.number_input('Opening sportsbook line', value=None, step=0.5)
-        current = st.number_input('Current sportsbook line', value=None, step=0.5)
+        opening = st.number_input('Opening sportsbook line', value=None, step=0.5, key=widget_scope + ':' + ('Opening sportsbook line'))
+        current = st.number_input('Current sportsbook line', value=None, step=0.5, key=widget_scope + ':' + ('Current sportsbook line'))
         odds_cols = st.columns(2)
         with odds_cols[0]:
-            price_over = st.number_input('Current Over odds (American)', value=None, step=1)
+            price_over = st.number_input('Current Over odds (American)', value=None, step=1, key=widget_scope + ':' + ('Current Over odds (American)'))
         with odds_cols[1]:
-            price_under = st.number_input('Current Under odds (American)', value=None, step=1)
+            price_under = st.number_input('Current Under odds (American)', value=None, step=1, key=widget_scope + ':' + ('Current Under odds (American)'))
         moved = opening is not None and current is not None and abs(current - opening) > 1e-9
         if opening is not None and current is not None:
             st.caption(f'Opening {opening:g} → current {current:g} ({current - opening:+g}).')
-        market_over = None
+        market_over = signal = None
         if current is not None and abs(current - line) > 1e-9:
             st.info('Enter sportsbook odds at the exact PrizePicks line for a comparable market estimate.')
         elif current is not None and all(price is not None and abs(price) >= 100
@@ -390,7 +391,62 @@ def pick_research_inputs(sport, baseline, sigma, line, distribution, nba_context
             recorded.append(f'current line {current:g}')
         if market_over is not None:
             recorded.append(f'sportsbook Over {price_over:+g}, Under {price_under:+g}')
-        return adjusted, market_over, 'Research: ' + ', '.join(recorded) + '.'
+        return adjusted, market_over, 'Research: ' + ', '.join(recorded) + '.', signal
+
+
+def show_board_research(picks, sport, board_scope):
+    with st.expander('Research a line on this board'):
+        st.caption('Choose a PrizePicks line and add your research. Saved reviews appear below the board in this session.')
+        lines = picks.reset_index(drop=True)
+
+        def describe(index):
+            row = lines.iloc[index]
+            return f"{row['player']} · {row['market']} {row['line']:g} · {row['event']}"
+
+        board_key = sha256(repr(board_scope).encode()).hexdigest()[:16]
+        index = st.selectbox('PrizePicks line to research', range(len(lines)), format_func=describe,
+                             key=f'board_research:{board_key}:line')
+        row = lines.iloc[index]
+        identifier = (sport, row['event'], row['player'], row['market'], float(row['line']),
+                      row.get('starts_utc', ''))
+        widget_scope = 'board_research:' + sha256(repr((board_key, identifier)).encode()).hexdigest()[:20]
+        st.caption(f"Enter inputs for {row['player']} • {row['market']} • {row['line']:g}.")
+        use_context, context_mean, context_notes = (
+            nba_projection_inputs(widget_scope) if sport == 'NBA' else (False, None, '')
+        )
+        baseline = context_mean if use_context else st.number_input(
+            'Baseline statistical projection', min_value=0.0, value=None,
+            key=widget_scope + ':baseline',
+        )
+        sigma = st.number_input('Projected standard deviation', min_value=0.1, value=None,
+                                key=widget_scope + ':sigma')
+        if sigma is None:
+            st.info('Enter a standard deviation to account for variance.')
+        else:
+            _, _, research_notes, signal = pick_research_inputs(
+                sport, baseline, sigma, float(row['line']), 'Normal (continuous approximation)',
+                use_context, widget_scope, enabled_by_default=True,
+            )
+            if signal and st.button('Save research review', key=widget_scope + ':save'):
+                reviews = st.session_state.setdefault('board_research_reviews', {})
+                reviews[identifier] = {
+                    'Sport': sport, 'Event': row['event'], 'Player': row['player'],
+                    'Market': row['market'], 'Line': row['line'], 'Research signal': signal,
+                    'Board estimate at review (%)': row.get('market_estimate_pct'),
+                    'Board side at review': row.get('side'),
+                    'Evidence': ' '.join(part for part in (context_notes, research_notes) if part),
+                }
+                st.success('Research review saved.')
+    reviews = st.session_state.get('board_research_reviews', {})
+    identifiers = {(sport, row.event, row.player, row.market, float(row.line),
+                    getattr(row, 'starts_utc', '')) for row in picks.itertuples(index=False)}
+    current_reviews = [review for key, review in reviews.items() if key in identifiers]
+    if current_reviews:
+        st.markdown('**Reviewed lines on this board**')
+        reviews_frame = pd.DataFrame(current_reviews)
+        st.dataframe(reviews_frame, hide_index=True, use_container_width=True)
+        st.download_button('Download research reviews', reviews_frame.to_csv(index=False),
+                           'prizepicks_research_reviews.csv', mime='text/csv')
 
 
 def init_db():
@@ -793,6 +849,7 @@ with best:
                 st.dataframe(picks, hide_index=True, use_container_width=True)
                 st.download_button('Download all comparison results', picks.to_csv(index=False),
                                    f'{pick_sport.lower()}_prizepicks.csv', mime='text/csv')
+                show_board_research(picks, pick_sport, pick_scope)
 
 with tab1:
     st.subheader('Live sportsbook market discovery')
@@ -895,7 +952,7 @@ with tab2:
     )
     if use_context:
         mu = context_mean
-    mu, researched_market_over, research_notes = pick_research_inputs(
+    mu, researched_market_over, research_notes, _ = pick_research_inputs(
         es, mu, sigma, line, dist, use_context,
     )
     if researched_market_over is not None:
