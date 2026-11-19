@@ -282,6 +282,117 @@ def nba_projection_inputs():
         return True, projection, evidence
 
 
+CONTEXT_FACTORS = (
+    ('Opponent defense and matchup', 'Use the defense against this stat or role. In football, a strong run defense may shift volume toward passing, while pass coverage can still reduce efficiency.'),
+    ('Game environment', 'Consider pace, expected scoring and outdoor weather where relevant.'),
+    ('Home or away split', 'Use comparable home/away samples and account for role changes.'),
+    ('Previous meetings', 'Use comparable matchups. Small samples and roster changes reduce their value.'),
+    ('Coaching strategy', 'Consider observed play calling, rotation changes and the expected game plan.'),
+    ('Fatigue and rest', 'Consider days off, travel, back-to-backs and recent workload.'),
+    ('Blowout risk', 'Consider late-game minutes in basketball and expected score-driven play calling in football.'),
+)
+
+
+def research_adjusted_mean(base, independent, reference_usage, expected_usage, adjustments):
+    anchor = base if independent is None else (base + independent) / 2
+    usage_change = ((expected_usage / reference_usage - 1) * 50
+                    if reference_usage is not None and expected_usage is not None else 0)
+    usage_change = max(-15, min(15, usage_change))
+    total_change = max(-30, min(30, usage_change + sum(adjustments)))
+    return anchor, anchor * (1 + total_change / 100), usage_change, total_change
+
+
+def research_pick_signal(mean, sigma, line, distribution, market_over, moved):
+    if float(line).is_integer():
+        return 'Pass — whole-number line adds push risk.', None
+    over = prob_model(mean, sigma, line, 'Over', distribution)
+    gap = (over - market_over) * 100
+    if moved:
+        return 'Recheck — sportsbook line moved since opening.', gap
+    if abs(gap) < 3:
+        return 'Pass — model and market are within 3 percentage points.', gap
+    return ('Model lean: More' if gap > 0 else 'Model lean: Less'), gap
+
+
+def pick_research_inputs(sport, baseline, sigma, line, distribution, nba_context_used):
+    with st.expander('Research factors, sportsbook odds and line movement'):
+        if not st.checkbox('Use research factors in this evaluation'):
+            return baseline, None, ''
+        if baseline is None:
+            st.info('Finish the baseline projection first.')
+            return baseline, None, ''
+
+        if sport == 'NBA':
+            st.markdown('Use [NBA advanced player stats](https://www.nba.com/stats/players/advanced) for usage-rate context.')
+        elif sport in ('NFL', 'CFB'):
+            st.markdown('Use an opportunity share relevant to the prop, such as targets or carries. See [NFL Next Gen Stats](https://nextgenstats.nfl.com/stats/passing) for NFL passing context.')
+        st.caption('Enter evidence-based changes to expected production. Leave unknown factors blank and avoid entering an adjustment already included in the baseline.')
+        independent = st.number_input('Second statistical projection (optional)',
+                                      min_value=0.0, value=None,
+                                      help='Blended equally with the baseline. Leave blank if it relies on the same model.')
+        left, right = st.columns(2)
+        with left:
+            reference = st.number_input('Baseline usage or opportunity share (%)',
+                                        min_value=0.1, max_value=100.0, value=None)
+        with right:
+            expected = st.number_input('Expected usage or opportunity share (%)',
+                                       min_value=0.0, max_value=100.0, value=None)
+        if (reference is None) != (expected is None):
+            st.info('Enter both usage shares to apply a usage adjustment.')
+        adjustments = []
+        evidence = []
+        if nba_context_used:
+            st.caption('If you already applied the NBA defense adjustment above, leave the opponent adjustment blank.')
+        for label, help_text in CONTEXT_FACTORS:
+            change = st.number_input(f'{label} adjustment (%)', min_value=-20.0,
+                                     max_value=20.0, value=None, step=1.0, help=help_text)
+            if change is not None:
+                adjustments.append(change)
+                evidence.append(f'{label} {change:+g}%')
+        anchor, adjusted, usage_change, total_change = research_adjusted_mean(
+            baseline, independent, reference, expected, adjustments,
+        )
+        st.metric('Research-adjusted projection', f'{adjusted:.2f}', f'{total_change:+.1f}% vs. baseline blend')
+        st.caption(f'Baseline blend {anchor:.2f}. Usage contribution {usage_change:+.1f}%. Combined change capped at ±30%. These weights are screening assumptions.')
+        if not distribution.startswith('Poisson'):
+            st.caption(f'The evaluator uses the entered standard deviation of {sigma:g} to account for variance.')
+        else:
+            st.caption('With the Poisson model, variance equals the adjusted mean.')
+
+        opening = st.number_input('Opening sportsbook line', value=None, step=0.5)
+        current = st.number_input('Current sportsbook line', value=None, step=0.5)
+        odds_cols = st.columns(2)
+        with odds_cols[0]:
+            price_over = st.number_input('Current Over odds (American)', value=None, step=1)
+        with odds_cols[1]:
+            price_under = st.number_input('Current Under odds (American)', value=None, step=1)
+        moved = opening is not None and current is not None and abs(current - opening) > 1e-9
+        if opening is not None and current is not None:
+            st.caption(f'Opening {opening:g} → current {current:g} ({current - opening:+g}).')
+        market_over = None
+        if current is not None and abs(current - line) > 1e-9:
+            st.info('Enter sportsbook odds at the exact PrizePicks line for a comparable market estimate.')
+        elif current is not None and all(price is not None and abs(price) >= 100
+                                         for price in (price_over, price_under)):
+            implied_over, implied_under = american_prob(price_over), american_prob(price_under)
+            market_over = implied_over / (implied_over + implied_under)
+            signal, gap = research_pick_signal(adjusted, sigma, line, distribution, market_over, moved)
+            st.write(f'**{signal}**')
+            if gap is not None:
+                st.caption(f'Model Over estimate differs from the no-vig sportsbook estimate by {gap:+.1f} percentage points.')
+        else:
+            st.info('Enter two valid sportsbook prices at the current line to generate a research pick signal.')
+        recorded = [f'Anchor {anchor:.2f}', f'usage adjustment {usage_change:+.1f}%',
+                    f'total adjustment {total_change:+.1f}%', *evidence]
+        if opening is not None:
+            recorded.append(f'opening line {opening:g}')
+        if current is not None:
+            recorded.append(f'current line {current:g}')
+        if market_over is not None:
+            recorded.append(f'sportsbook Over {price_over:+g}, Under {price_under:+g}')
+        return adjusted, market_over, 'Research: ' + ', '.join(recorded) + '.'
+
+
 def init_db():
     with sqlite3.connect(DB) as c:
         c.execute('CREATE TABLE IF NOT EXISTS picks (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, sport TEXT, event TEXT, player TEXT, market TEXT, line REAL, side TEXT, model_prob REAL, market_prob REAL, edge REAL, platform TEXT, payout_multiplier REAL, status TEXT DEFAULT "Pending", actual REAL, closing_line REAL, notes TEXT)')
@@ -784,6 +895,11 @@ with tab2:
     )
     if use_context:
         mu = context_mean
+    mu, researched_market_over, research_notes = pick_research_inputs(
+        es, mu, sigma, line, dist, use_context,
+    )
+    if researched_market_over is not None:
+        market_over = 100 * researched_market_over
     if mu is not None:
         p=prob_model(mu,sigma,line,side,dist); mp=market_over/100 if side=='Over' else 1-market_over/100
         edge=p-mp; ev=p*payout-(1-p)
@@ -791,7 +907,7 @@ with tab2:
         m1.metric('Model hit estimate',f'{p:.1%}');m2.metric('Market estimate',f'{mp:.1%}');m3.metric('Model-market gap',f'{edge:+.1%}');m4.metric('Illustrative binary EV',f'{ev:+.1%}')
         st.warning('This EV assumes a standalone binary payout. PrizePicks/Underdog multi-pick entries require joint probabilities, correlations and the exact payout table. Integer lines may push; this basic calculator does not model pushes.')
         notes=st.text_area('Evidence / injury and lineup checks / source timestamps')
-        notes = '\n'.join(part for part in (context_notes, notes) if part)
+        notes = '\n'.join(part for part in (context_notes, research_notes, notes) if part)
         if st.button('Save as paper prediction'):
             if not player.strip() or not event.strip(): st.error('Player and event required')
             else:
