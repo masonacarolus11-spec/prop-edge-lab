@@ -154,16 +154,16 @@ def top_picks(event_rankings):
     if not event_rankings:
         return pd.DataFrame()
     ranked = pd.concat(event_rankings, ignore_index=True)
-    ranked = ranked[
-        (ranked['market_based_ev_pct'] > 0)
-        & (ranked['other_books'] >= 2)
-        & ranked['player'].fillna('').str.strip().ne('')
-    ]
+    ranked = ranked[ranked['player'].fillna('').str.strip().ne('')]
+    # Keep every comparable price eligible, while prioritizing stronger positive comparisons.
+    ranked = ranked.assign(
+        _strong=(ranked['market_based_ev_pct'] > 0) & (ranked['other_books'] >= 2)
+    )
     return (
-        ranked.sort_values(['market_based_ev_pct', 'other_books'], ascending=False)
+        ranked.sort_values(['_strong', 'market_based_ev_pct', 'other_books'], ascending=False)
         .drop_duplicates(['event_id', 'player', 'market'])
         .head(10)
-        .drop(columns='event_id')
+        .drop(columns=['event_id', '_strong'])
         .reset_index(drop=True)
     )
 
@@ -233,7 +233,7 @@ best,tab1,tab2,tab3,tab4,research=st.tabs(['Best picks', 'ðŸ”Ž Scan markets','ðŸ
 key_id = sha256(api_key.encode()).hexdigest()
 with best:
     st.subheader('Top 10 picks by sport')
-    st.caption('Ranks offers by price against at least two other sportsbooks at the same line. Estimates are based on sportsbook prices.')
+    st.caption('Compares prices at the same line. Positive estimates backed by two or more other books appear first. Lower-ranked offers may have one comparison book or a zero or negative estimate.')
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS)
     pick_region = st.selectbox('Sportsbook region', ['us', 'us2', 'uk', 'eu', 'au'])
     if pick_sport not in PICK_MARKETS:
@@ -260,6 +260,7 @@ with best:
             if picks.empty:
                 st.info('No qualifying offers were found in the events checked.')
             else:
+                st.caption(f'Showing {len(picks)} of up to 10 comparable offers. Check other_books and market_based_ev_pct before using a result.')
                 st.dataframe(picks, hide_index=True, use_container_width=True)
                 st.download_button('Download top picks', picks.to_csv(index=False),
                                    f'{pick_sport.lower()}_top_picks.csv', mime='text/csv')
