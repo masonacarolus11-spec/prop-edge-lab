@@ -577,10 +577,13 @@ def nba_automatic_context(logs, row, game_date, injuries=None, role_history=None
     defense = logs.groupby(['opponent', 'game_id'])[stat].sum(min_count=1).groupby(level=0).agg(['mean', 'count'])
     eligible = defense[defense['count'] >= 5]['mean'].dropna()
     defense_rank = None
+    defense_basis = None
     if opponent in eligible and eligible.mean() > 0:
         defense_rank = int(eligible.rank(method='min')[opponent])
+        defense_basis = 'Team defense'
         allowed, average = eligible[opponent], eligible.mean()
         if role.get('League per-game allowed to position group', 0) > 0:
+            defense_basis = 'Position group defense'
             allowed = role['Opponent per-game allowed to position group']
             average = role['League per-game allowed to position group']
         rate *= 1 + max(-0.08, min(0.08, 0.25 * (allowed / average - 1)))
@@ -607,6 +610,11 @@ def nba_automatic_context(logs, row, game_date, injuries=None, role_history=None
         status = 'Hold · player availability uncertain'
     lean = None
     gap = None
+    model_over = None
+    line = float(row['line'])
+    if not status.startswith('Hold') and deviation > 0 and not line.is_integer():
+        model_over = 100 * prob_model(projection, deviation, line, 'Over',
+                                     'Normal (continuous approximation)')
     estimate = row.get('market_estimate_pct')
     market_side = row.get('side')
     if not status.startswith('Hold') and pd.notna(estimate) and market_side in ('Over', 'Under') and deviation > 0:
@@ -630,11 +638,110 @@ def nba_automatic_context(logs, row, game_date, injuries=None, role_history=None
         'Opponent team defense rank': f'{defense_rank}/{len(eligible)}' if defense_rank else None,
         'Projected stat': round(projection, 2), 'Season standard deviation': round(deviation, 2),
         'Model–market Over gap (pp)': round(gap, 1) if gap is not None else None,
-        'Model signal': lean, 'Last player game in feed': str(latest_date), **role, **usage,
+        'Model signal': lean, 'Model More estimate (%)': model_over,
+        'Venue split games': len(same_venue), 'Defense factor applied': defense_basis,
+        'Last player game in feed': str(latest_date), **role, **usage,
     }
 
 
-def show_auto_nba_board(picks, board_scope):
+def pick_evaluation(row):
+    def value(column):
+        item = row.get(column)
+        return item if pd.notna(item) else None
+
+    market_side = value('side')
+    consensus = value('market_estimate_pct')
+    books = value('comparison_books')
+    model_more = value('Model More estimate (%)')
+    offer_line = float(row['line'])
+    model_stat = value('Projected stat')
+    signal = value('Model signal')
+    status = value('Auto status')
+    if status and status.startswith('Hold'):
+        outcome = status
+    elif signal:
+        outcome = signal
+    elif model_stat is not None and offer_line.is_integer():
+        outcome = 'Pass — whole-number line adds push risk.'
+    elif model_stat is not None:
+        outcome = 'Projection only — no exact sportsbook comparison for a pick signal.'
+    elif consensus is not None and market_side in ('Over', 'Under'):
+        if math.isclose(float(consensus), 50):
+            outcome = 'Sportsbook consensus is even'
+        else:
+            outcome = 'Sportsbook lean: ' + ('More' if market_side == 'Over' else 'Less')
+    else:
+        outcome = 'No automatic lean available'
+
+    factors = []
+    if consensus is not None and market_side in ('Over', 'Under'):
+        if math.isclose(float(consensus), 50):
+            summary = 'The sportsbook comparison was evenly split at this exact line'
+        else:
+            label = 'More' if market_side == 'Over' else 'Less'
+            summary = f'Sportsbook consensus at this exact line was {consensus:.1f}% {label}'
+        if books is not None:
+            summary += f' across {int(books)} books'
+        factors.append(summary + '.')
+    elif value('status'):
+        factors.append(f"Sportsbook comparison status: {value('status')}.")
+
+    if model_stat is not None:
+        factors.append(
+            f"Projected {model_stat:.2f} at {value('Expected minutes'):.1f} expected minutes. "
+            f"Season average {value('Season average'):.2f}; last five {value('Last five average'):.2f}."
+        )
+        if value('Season standard deviation') is not None:
+            factors.append(f"Season standard deviation was {value('Season standard deviation'):.2f}.")
+        if value('Venue split games') and value('Venue split games') >= 5:
+            factors.append(f"The model used the matching home/away split ({int(value('Venue split games'))} games).")
+        if value('Prior meetings') and value('Prior meetings') >= 3:
+            factors.append(f"The model lightly weighted {int(value('Prior meetings'))} games against this opponent.")
+        if value('Defense factor applied'):
+            rank_column = ('Opponent rank vs position group' if
+                           value('Defense factor applied') == 'Position group defense' else
+                           'Opponent team defense rank')
+            rank = value(rank_column)
+            factors.append(f"{value('Defense factor applied')} adjusted the projection"
+                           + (f' (rank {rank}, 1 allows the least).' if rank else '.'))
+        if value('Injury report status'):
+            factors.append(f"Injury report: {value('Injury report status')}. Starting lineup is unverified.")
+        if value('Estimated role'):
+            factors.append(f"Estimated role: {value('Estimated role')} based on recent starts.")
+    elif status:
+        factors.append(f'NBA research: {status}.')
+    if value('PrizePicks line change'):
+        factors.append(f"PrizePicks moved {value('PrizePicks line change'):+g} from the first recorded line.")
+    if value('Lopsided game flag') == 'Elevated':
+        factors.append('The game spread flagged increased blowout risk.')
+    gap = value('Model–market Over gap (pp)')
+    if gap is not None:
+        factors.append(f'Model More estimate is {gap:+.1f} percentage points from sportsbook consensus.')
+    return outcome, model_more, factors
+
+
+def show_pick_evaluation(row):
+    market = str(row['market']).removeprefix('player_').replace('_', ' ')
+    st.markdown(f"**{row['player']} · {market} {row['line']:g}**")
+    st.caption(row['event'])
+    outcome, model_more, factors = pick_evaluation(row)
+    st.markdown(f'**{outcome}**')
+    if model_more is not None:
+        st.caption(f'Model estimates · More {model_more:.1f}% · Less {100 - model_more:.1f}%')
+    if factors:
+        st.markdown('\n'.join(f'- {factor}' for factor in factors))
+    else:
+        st.info('No verified data is available to evaluate this line.')
+
+
+def selectable_prop_table(picks, key):
+    st.caption('Click a row to see its evaluation.')
+    selection = st.dataframe(picks, key=key, on_select='rerun', selection_mode='single-row',
+                             hide_index=True, use_container_width=True, height=280)
+    return next(iter(selection.selection.rows), None)
+
+
+def show_auto_nba_board(picks, board_scope, selected_index=None):
     scope = sha256((repr(board_scope) + picks.to_json() + str(int(dt.datetime.now(dt.timezone.utc).timestamp()) // 900)).encode()).hexdigest()[:16]
     with st.expander('Automatic NBA research', expanded=True):
         st.caption('Season, recent and matchup stats from NBA game logs via SportsDataverse. Uses zero Odds API credits.')
@@ -663,8 +770,15 @@ def show_auto_nba_board(picks, board_scope):
                 st.session_state['auto_nba_board'] = saved
             except (requests.RequestException, ValueError, KeyError, TypeError):
                 st.error('NBA game logs are temporarily unavailable from the source.')
+                if selected_index is not None and selected_index < len(picks):
+                    show_pick_evaluation(picks.iloc[selected_index])
                 return
-        st.dataframe(saved[1], hide_index=True, use_container_width=True)
+        if selected_index is not None and selected_index < len(saved[1]):
+            st.markdown('**Selected line evaluation**')
+            show_pick_evaluation(saved[1].iloc[selected_index])
+        auto_index = selectable_prop_table(saved[1], f'auto_nba_table:{scope}')
+        if selected_index is None and auto_index is not None and auto_index < len(saved[1]):
+            show_pick_evaluation(saved[1].iloc[auto_index])
         st.download_button('Download automatic NBA research', saved[1].to_csv(index=False),
                            'nba_automatic_research.csv', mime='text/csv')
         st.caption('Defense rank 1 allows the least. Position ranks use broad guard, forward and center groups. Usage is estimated from box-score possessions. Recent starts estimate the role. Check confirmed lineups separately. Missing injury entries leave availability unconfirmed.')
@@ -1196,11 +1310,14 @@ with best:
                 else:
                     st.caption(f'{len(picks)} PrizePicks lines loaded.')
                     picks = picks.drop(columns=['side', 'market_estimate_pct', 'comparison_books'])
-                st.dataframe(picks, hide_index=True, use_container_width=True)
+                table_key = sha256((repr(pick_scope) + picks.to_json()).encode()).hexdigest()[:18]
+                selected_index = selectable_prop_table(picks, f'prizepicks_table:{table_key}')
                 st.download_button('Download all comparison results', picks.to_csv(index=False),
                                    f'{pick_sport.lower()}_prizepicks.csv', mime='text/csv')
                 if pick_sport == "NBA":
-                    show_auto_nba_board(picks, pick_scope)
+                    show_auto_nba_board(picks, pick_scope, selected_index)
+                elif selected_index is not None and selected_index < len(picks):
+                    show_pick_evaluation(picks.iloc[selected_index])
                 show_board_research(picks, pick_sport, pick_scope)
 
 with tab1:
