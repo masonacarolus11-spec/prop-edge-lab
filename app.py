@@ -419,6 +419,16 @@ def load_nba_game_log(season):
     logs = logs[logs['min'] > 0].drop_duplicates(['game_id', 'player_id'])
     logs['opponent'] = logs['matchup'].str.extract(r'(?:@|vs\.?)\s+([A-Z]{2,3})$')[0]
     logs['home'] = ~logs['matchup'].str.contains('@', na=False)
+    if {'fga', 'fta', 'tov'}.issubset(logs.columns):
+        attempts = logs[['fga', 'fta', 'tov']].apply(pd.to_numeric, errors='coerce')
+        possessions = attempts['fga'] + 0.44 * attempts['fta'] + attempts['tov']
+        group = [logs['game_id'], logs['team_abbreviation']]
+        team_possessions = possessions.groupby(group).transform('sum')
+        team_minutes = logs['min'].groupby(group).transform('sum')
+        denominator = team_possessions * logs['min']
+        logs['estimated_usage'] = (
+            100 * possessions * team_minutes / 5 / denominator.where(denominator.gt(0))
+        )
     return logs
 
 
@@ -463,7 +473,68 @@ def nba_name_key(value):
     return ''.join(char for char in text if char.isalnum())
 
 
-def nba_automatic_context(logs, row, game_date, injuries=None):
+NBA_BOX_URL = ('https://github.com/sportsdataverse/sportsdataverse-data/'
+               'releases/download/espn_nba_player_boxscores')
+
+
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+def load_nba_role_history(season):
+    from io import BytesIO
+
+    response = requests.get(f'{NBA_BOX_URL}/player_box_{season}.parquet', timeout=(5, 15))
+    response.raise_for_status()
+    columns = ['game_id', 'game_date', 'athlete_display_name', 'athlete_id',
+               'athlete_position_abbreviation', 'team_display_name', 'opponent_team_display_name',
+               'starter', 'minutes', 'points', 'rebounds', 'assists']
+    frame = pd.read_parquet(BytesIO(response.content), columns=columns)
+    frame['game_date'] = pd.to_datetime(
+        frame['game_date'].astype(str).str.slice(0, 10), errors='coerce'
+    ).dt.date
+    frame['minutes'] = pd.to_numeric(frame['minutes'], errors='coerce')
+    frame = frame.loc[frame['minutes'].gt(0)].drop_duplicates(['game_id', 'athlete_id']).copy()
+    frame['athlete_key'] = frame['athlete_display_name'].map(nba_name_key)
+    frame['team_key'] = frame['team_display_name'].map(nba_name_key)
+    frame['opponent_key'] = frame['opponent_team_display_name'].map(nba_name_key)
+    frame['position'] = frame['athlete_position_abbreviation'].astype('string').str.upper()
+    return frame
+
+
+def nba_role_context(history, player_name, team_name, opponent_name, game_date, stat):
+    if history is None:
+        return {}, None
+    history = history.loc[history['game_date'].lt(game_date)]
+    player = history.loc[history['athlete_key'].eq(nba_name_key(player_name))
+                         & history['team_key'].eq(nba_name_key(team_name))]
+    player = player.sort_values(['game_date', 'game_id'])
+    if player['athlete_id'].nunique() != 1 or len(player) < 3:
+        return {}, None
+    recent = player.tail(5)
+    starter = recent['starter'].astype('string').str.lower().map({'true': True, 'false': False})
+    count = int(starter.sum()) if starter.notna().all() else None
+    position = recent.iloc[-1]['position']
+    projected_minutes = None
+    if count in (0, len(recent)):
+        projected_minutes = float(recent['minutes'].mean())
+    result = {'Starts in recent games': f'{count}/{len(recent)}' if count is not None else None,
+              'Estimated role': ('Likely starter' if count == len(recent) else
+                                 'Likely bench' if count == 0 else 'Mixed or unverified')}
+    if pd.isna(position) or position not in ('G', 'F', 'C'):
+        return result, projected_minutes
+    result['Listed position group'] = position
+    stat_column = {'pts': 'points', 'reb': 'rebounds', 'ast': 'assists'}[stat]
+    allowed = (history.loc[history['position'].eq(position)]
+               .groupby(['opponent_key', 'game_id'])[stat_column].sum(min_count=1)
+               .groupby(level=0).agg(['mean', 'count']))
+    eligible = allowed.loc[allowed['count'].ge(5), 'mean'].dropna()
+    opponent_key = nba_name_key(opponent_name)
+    if opponent_key in eligible.index:
+        result['Opponent rank vs position group'] = f'{int(eligible.rank(method="min")[opponent_key])}/{len(eligible)}'
+        result['Opponent per-game allowed to position group'] = round(float(eligible[opponent_key]), 2)
+        result['League per-game allowed to position group'] = round(float(eligible.mean()), 2)
+    return result, projected_minutes
+
+
+def nba_automatic_context(logs, row, game_date, injuries=None, role_history=None):
     stat = NBA_STAT_COLUMNS.get(row['market'])
     teams = str(row['event']).split(' at ', 1)
     if stat is None or len(teams) != 2:
@@ -494,7 +565,10 @@ def nba_automatic_context(logs, row, game_date, injuries=None):
     same_venue = on_current_team[on_current_team['home'].eq(home)]
     against = on_current_team[on_current_team['opponent'].eq(opponent)]
     latest_date = recent.iloc[-1]['game_date']
-    mean_minutes = float(recent['min'].mean())
+    role, role_minutes = nba_role_context(
+        role_history, row['player'], teams[int(home)], teams[int(not home)], game_date, stat,
+    )
+    mean_minutes = role_minutes if role_minutes is not None else float(recent['min'].mean())
     season_rate = player[stat].sum() / player['min'].sum()
     recent_rate = recent[stat].sum() / recent['min'].sum()
     rate = 0.6 * season_rate + 0.4 * recent_rate
@@ -505,7 +579,22 @@ def nba_automatic_context(logs, row, game_date, injuries=None):
     defense_rank = None
     if opponent in eligible and eligible.mean() > 0:
         defense_rank = int(eligible.rank(method='min')[opponent])
-        rate *= 1 + max(-0.08, min(0.08, 0.25 * (eligible[opponent] / eligible.mean() - 1)))
+        allowed, average = eligible[opponent], eligible.mean()
+        if role.get('League per-game allowed to position group', 0) > 0:
+            allowed = role['Opponent per-game allowed to position group']
+            average = role['League per-game allowed to position group']
+        rate *= 1 + max(-0.08, min(0.08, 0.25 * (allowed / average - 1)))
+    if len(against) >= 3:
+        matchup_rate = against[stat].sum() / against['min'].sum()
+        rate = 0.95 * rate + 0.05 * matchup_rate
+    usage = {}
+    if 'estimated_usage' in player:
+        season_usage = player['estimated_usage'].dropna()
+        recent_usage = recent['estimated_usage'].dropna()
+        if not season_usage.empty and not recent_usage.empty:
+            usage = {'Season usage estimate (%)': round(float(season_usage.mean()), 1),
+                     'Last five usage estimate (%)': round(float(recent_usage.mean()), 1)}
+    # Per-minute production already reflects usage, so report it alongside the projection.
     projection = mean_minutes * rate
     deviation = float(player[stat].std())
     injury, injury_timestamp = nba_injury_status(injuries, game_date, team_codes,
@@ -522,8 +611,13 @@ def nba_automatic_context(logs, row, game_date, injuries=None):
     market_side = row.get('side')
     if not status.startswith('Hold') and pd.notna(estimate) and market_side in ('Over', 'Under') and deviation > 0:
         market_over = (estimate if market_side == 'Over' else 100 - estimate) / 100
+        moved = row.get('PrizePicks line change')
         lean, gap = research_pick_signal(projection, deviation, float(row['line']),
                                          'Normal (continuous approximation)', market_over, False)
+        if pd.notna(moved) and moved != 0 and lean.startswith('Model lean'):
+            lean = 'Recheck — PrizePicks line changed since first observed.'
+        if lean.startswith('Model lean') and row.get('Lopsided game flag') == 'Elevated':
+            lean = 'Recheck — large market spread could change minutes.'
     return {
         'Auto status': status, 'Injury report status': injury, 'Report time (Eastern)': injury_timestamp,
         'Season average': round(float(player[stat].mean()), 2),
@@ -536,7 +630,7 @@ def nba_automatic_context(logs, row, game_date, injuries=None):
         'Opponent team defense rank': f'{defense_rank}/{len(eligible)}' if defense_rank else None,
         'Projected stat': round(projection, 2), 'Season standard deviation': round(deviation, 2),
         'Model–market Over gap (pp)': round(gap, 1) if gap is not None else None,
-        'Model signal': lean, 'Last player game in feed': str(latest_date),
+        'Model signal': lean, 'Last player game in feed': str(latest_date), **role, **usage,
     }
 
 
@@ -555,11 +649,15 @@ def show_auto_nba_board(picks, board_scope):
                         injuries = load_nba_injury_report(season)
                     except (requests.RequestException, ValueError, KeyError, TypeError):
                         injuries = None
+                    try:
+                        role_history = load_nba_role_history(season)
+                    except (requests.RequestException, ValueError, KeyError, ImportError, TypeError):
+                        role_history = None
                     rows = []
                     for _, row in picks.iterrows():
                         start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
                         date = today if pd.isna(start) else start.tz_convert('America/New_York').date()
-                        context = nba_automatic_context(logs[logs['game_date'] < date], row, date, injuries)
+                        context = nba_automatic_context(logs[logs['game_date'] < date], row, date, injuries, role_history)
                         rows.append({**row.to_dict(), **context})
                 saved = (scope, pd.DataFrame(rows))
                 st.session_state['auto_nba_board'] = saved
@@ -569,7 +667,7 @@ def show_auto_nba_board(picks, board_scope):
         st.dataframe(saved[1], hide_index=True, use_container_width=True)
         st.download_button('Download automatic NBA research', saved[1].to_csv(index=False),
                            'nba_automatic_research.csv', mime='text/csv')
-        st.caption('Team defense rank uses overall production allowed for the selected stat, with 1 allowing the least. Head-to-head and rest are shown for review. Injury entries use the latest matchup report in the feed. Missing entries do not confirm availability. Starting lineups, usage rate, defense by position, coaching plans, blowout risk and opening prices still need separate verification.')
+        st.caption('Defense rank 1 allows the least. Position ranks use broad guard, forward and center groups. Usage is estimated from box-score possessions. Recent starts estimate the role. Check confirmed lineups separately. Missing injury entries leave availability unconfirmed.')
 
 
 def show_board_research(picks, sport, board_scope):
@@ -627,8 +725,65 @@ def show_board_research(picks, sport, board_scope):
                            'prizepicks_research_reviews.csv', mime='text/csv')
 
 
+def record_board_observations(board, sport):
+    keys = ['event_id', 'player', 'market']
+    observations = {}
+    with sqlite3.connect(DB) as db:
+        rows = board.loc[~board.duplicated(keys, keep=False)]
+        for row in rows.itertuples(index=False):
+            if pd.isna(row.prizepicks_updated_utc):
+                continue
+            key = (sport, row.event_id, row.player, row.market)
+            db.execute(
+                'INSERT INTO prizepicks_first_lines VALUES (?, ?, ?, ?, ?, ?) '
+                'ON CONFLICT (sport, event_id, player, market) DO UPDATE SET '
+                'line=excluded.line, observed=excluded.observed '
+                'WHERE excluded.observed < prizepicks_first_lines.observed',
+                (*key, float(row.line), str(row.prizepicks_updated_utc)),
+            )
+            observations[key[1:]] = db.execute(
+                'SELECT line, observed FROM prizepicks_first_lines WHERE '
+                'sport=? AND event_id=? AND player=? AND market=?', key
+            ).fetchone()
+    first = [observations.get(key, (None, None))
+             for key in board[keys].itertuples(index=False, name=None)]
+    board = board.assign(**{
+        'First observed PrizePicks line': [row[0] for row in first],
+        'First observation UTC': [row[1] for row in first],
+    })
+    return board.assign(**{
+        'PrizePicks line change': board['line'] - pd.to_numeric(
+            board['First observed PrizePicks line'], errors='coerce'
+        ),
+    })
+
+
+def game_market_context(data, event):
+    rows = sportsbook_rows({
+        'bookmakers': [book for book in data['bookmakers']
+                       if book.get('key') and book['key'] not in DFS_BOOK_KEYS]
+    })
+    if rows.empty:
+        return {}
+    rows['line'] = pd.to_numeric(rows['line'], errors='coerce')
+    spreads = rows.loc[rows['market'].eq('spreads') & rows['side'].eq(event.get('home_team'))]
+    totals = rows.loc[rows['market'].eq('totals') & rows['side'].eq('Over')]
+    spread = spreads.drop_duplicates('book')['line'].median()
+    return {
+        'Market home spread': spread,
+        'Market game total': totals.drop_duplicates('book')['line'].median(),
+        'Lopsided game flag': ('Elevated' if abs(spread) >= 12 else 'Below 12-point screen')
+                              if pd.notna(spread) else 'Spread unavailable',
+    }
+
+
 def init_db():
     with sqlite3.connect(DB) as c:
+        c.execute(
+            'CREATE TABLE IF NOT EXISTS prizepicks_first_lines '
+            '(sport TEXT, event_id TEXT, player TEXT, market TEXT, line REAL, observed TEXT, '
+            'PRIMARY KEY (sport, event_id, player, market))'
+        )
         c.execute('CREATE TABLE IF NOT EXISTS picks (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, sport TEXT, event TEXT, player TEXT, market TEXT, line REAL, side TEXT, model_prob REAL, market_prob REAL, edge REAL, platform TEXT, payout_multiplier REAL, status TEXT DEFAULT "Pending", actual REAL, closing_line REAL, notes TEXT)')
 init_db()
 
@@ -851,14 +1006,14 @@ def compare_live_event(data, event, markets):
         on=['player', 'market', 'line'], how='left', validate='one_to_one',
     )
     return results.assign(
-        starts_utc=event['commence_time'],
+        event_id=event['id'], starts_utc=event['commence_time'],
         status=results['market_estimate_pct'].notna().map({
             True: 'Matched', False: 'No exact sportsbook comparison',
         }),
     )
 
 
-def load_live_prizepicks(key, sport, regions, event_limit, markets, compare):
+def load_live_prizepicks(key, sport, regions, event_limit, markets, compare, environment=False):
     events = fetch_events(key, SPORTS[sport])
     now = dt.datetime.now(dt.timezone.utc)
     upcoming = []
@@ -872,13 +1027,16 @@ def load_live_prizepicks(key, sport, regions, event_limit, markets, compare):
     selected = sorted(upcoming, key=lambda item: (item[0], item[1]['id']))[:event_limit]
 
     results, issues = [], []
+    requested = [*markets, 'spreads', 'totals'] if environment else markets
     checked = 0
     for _, event in selected:
         try:
             data, remaining = fetch_event_odds(
-                key, SPORTS[sport], event['id'], regions, ','.join(markets)
+                key, SPORTS[sport], event['id'], regions, ','.join(requested)
             )
             frame = compare_live_event(data, event, markets)
+            if environment and not frame.empty:
+                frame = frame.assign(**game_market_context(data, event))
             if not compare and not frame.empty:
                 frame['status'] = 'PrizePicks line only'
         except ProviderError as exc:
@@ -901,6 +1059,11 @@ def load_live_prizepicks(key, sport, regions, event_limit, markets, compare):
     board = (pd.concat(results, ignore_index=True)
              .sort_values('market_estimate_pct', ascending=False, kind='stable')
              if results else pd.DataFrame())
+    if not board.empty:
+        try:
+            board = record_board_observations(board, sport)
+        except sqlite3.Error:
+            issues.append('Could not update first-observed line history.')
     return board, checked, len(selected), issues
 
 
@@ -986,22 +1149,27 @@ with best:
             st.info(f'The uploads contain no {pick_sport} lines.')
         event_limit = st.slider('Maximum games to scan', min_value=1, max_value=12, value=1)
         compare = True
+        environment = False
         scan_markets = allowed_markets
         if live_board:
             scan_markets = st.multiselect('Markets to load', allowed_markets, default=allowed_markets[:1])
             compare = st.checkbox('Compare with sportsbooks', value=True,
                                   help='Turn off to load PrizePicks lines at half the maximum credit cost.')
+            if compare:
+                environment = st.checkbox('Include game spread and total',
+                                          help='Uses extra credits and screens large spreads for blowout risk.')
+            st.caption('Line changes use the first PrizePicks line saved by SharpLine.')
         regions = (f'{pick_region},us_dfs' if compare else 'us_dfs') if live_board else pick_region
-        credits = event_limit * len(scan_markets) * len(regions.split(','))
+        credits = event_limit * (len(scan_markets) + 2 * int(environment)) * len(regions.split(','))
         st.caption(f'Maximum cost: {credits} provider credits. Identical requests can reuse cached odds for five minutes.')
         pick_scope = (key_id, pick_sport, regions, live_board, tuple(board_ids), event_limit,
-                      tuple(scan_markets))
+                      tuple(scan_markets), environment)
         action = 'Load PrizePicks lines' if live_board else 'Compare PrizePicks lines'
         if st.button(action, disabled=not api_key or not scan_markets or (not live_board and board.empty)):
             st.session_state.pop('prizepicks_matches', None)
             try:
                 with st.spinner('Comparing PrizePicks lines…'):
-                    result = (load_live_prizepicks(api_key, pick_sport, regions, event_limit, scan_markets, compare)
+                    result = (load_live_prizepicks(api_key, pick_sport, regions, event_limit, scan_markets, compare, environment)
                               if live_board else
                               scan_top_picks(api_key, pick_sport, pick_region, board, event_limit))
                 st.session_state['prizepicks_matches'] = (pick_scope, result)
