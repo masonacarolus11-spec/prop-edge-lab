@@ -63,6 +63,8 @@ def configured_key():
 RESEARCH_LINKS = {
     'NBA': (
         ('Player stats', 'NBA Stats', 'https://www.nba.com/stats/players/traditional', 'Minutes, points, rebounds and assists.'),
+        ('Starting lineups', 'RotoWire NBA Lineups', 'https://www.rotowire.com/basketball/nba-lineups.php', 'Check whether the lineup is projected or confirmed.'),
+        ('Matchup', 'Hashtag Basketball Defense vs. Position', 'https://hashtagbasketball.com/nba-defense-vs-position', 'Compare the stat allowed against PG, SG, SF, PF and C.'),
         ('Injury report', 'NBA Official Injury Report', 'https://official.nba.com/nba-injury-report-2026-27-season/', '2026–27 league reports. Open the latest report for your game.'),
     ),
     'NFL': (
@@ -203,6 +205,81 @@ def show_football_weather():
             st.caption('City-level forecast from [Open-Meteo](https://open-meteo.com/). The wind thresholds are screening rules. Weather does not change the app’s rankings.')
         except (requests.RequestException, ValueError, KeyError):
             st.error('Weather data is temporarily unavailable for this location.')
+
+
+def nba_context_projection(season_stat, season_minutes, recent_stat, recent_minutes,
+                           expected_minutes, recent_share, opponent_allowed=None,
+                           league_allowed=None):
+    season_rate = season_stat / season_minutes
+    recent_rate = recent_stat / recent_minutes
+    minutes_adjusted = expected_minutes * (
+        season_rate * (1 - recent_share) + recent_rate * recent_share
+    )
+    factor = 1.0
+    if opponent_allowed is not None and league_allowed is not None and league_allowed > 0:
+        # Shrink noisy defense-vs-position splits toward average and cap the adjustment.
+        factor += max(-0.15, min(0.15, 0.5 * (opponent_allowed / league_allowed - 1)))
+    return minutes_adjusted, minutes_adjusted * factor
+
+
+def nba_projection_inputs():
+    with st.expander('NBA lineup, minutes and matchup projection'):
+        enabled = st.checkbox('Use this NBA projection in the evaluator')
+        if not enabled:
+            st.caption('Combine season and recent production per minute with tonight’s expected role.')
+            return False, None, ''
+        show_research_links('NBA')
+        role = st.selectbox('Expected lineup role', ['Unconfirmed', 'Projected starter',
+                             'Confirmed starter', 'Bench', 'Out'])
+        position = st.selectbox('Position for opponent comparison', ['Unspecified', 'PG', 'SG', 'SF', 'PF', 'C'])
+        opponent = st.text_input('Opponent')
+        rank = st.number_input('Opponent rank vs. this position', min_value=1, max_value=30,
+                               value=None, step=1, help='Use 1 for the fewest and 30 for the most allowed for this stat.')
+        if role == 'Out':
+            st.info('Player marked out. The evaluator will skip this prop.')
+            return True, None, ''
+        if role in ('Unconfirmed', 'Projected starter'):
+            st.caption('Recheck the lineup and adjust expected minutes if the role changes.')
+        st.caption('Enter averages for the same stat above. Use the same recent games for the stat and minutes averages.')
+        season, recent = st.columns(2)
+        with season:
+            season_stat = st.number_input('Season average for this stat', min_value=0.0, value=None)
+            season_minutes = st.number_input('Season minutes per game', min_value=0.1, value=None)
+        with recent:
+            recent_stat = st.number_input('Last 5 games average for this stat', min_value=0.0, value=None)
+            recent_minutes = st.number_input('Last 5 games minutes per game', min_value=0.1, value=None)
+        expected_minutes = st.number_input('Expected minutes tonight', min_value=0.1, max_value=60.0,
+                                           value=None)
+        recent_weight = st.slider('Recent form weight (%)', 0, 100, 40)
+        opponent_allowed = league_allowed = None
+        if st.checkbox('Adjust for opponent defense'):
+            st.caption('Use the same stat, position and time window for both averages.')
+            opponent_allowed = st.number_input('Opponent average allowed vs. position',
+                                               min_value=0.0, value=None)
+            league_allowed = st.number_input('League average allowed vs. position',
+                                             min_value=0.1, value=None)
+            if not opponent.strip() or position == 'Unspecified' or None in (opponent_allowed, league_allowed):
+                st.info('Enter the opponent, position and both allowed averages to apply the matchup adjustment.')
+                return True, None, ''
+        if None in (season_stat, season_minutes, recent_stat, recent_minutes, expected_minutes):
+            st.info('Enter season, recent and expected minutes values to calculate a projection.')
+            return True, None, ''
+        baseline, projection = nba_context_projection(
+            season_stat, season_minutes, recent_stat, recent_minutes, expected_minutes,
+            recent_weight / 100, opponent_allowed, league_allowed,
+        )
+        st.metric('NBA projection', f'{projection:.2f}')
+        st.caption(f'{baseline:.2f} before the matchup adjustment. The matchup adjustment is capped at ±15%.')
+        rank_note = f', defense rank {rank}/30 vs. {position}' if rank is not None else ''
+        defense_note = (f', opponent allowed {opponent_allowed:g} vs. league {league_allowed:g}'
+                        if opponent_allowed is not None else '')
+        evidence = (
+            f'NBA context: {role}, opponent {opponent or "unspecified"}{rank_note}{defense_note}. '
+            f'Season {season_stat:g} in {season_minutes:g} min; last five {recent_stat:g} in '
+            f'{recent_minutes:g} min; {recent_weight}% recent weight; {expected_minutes:g} expected min. '
+            f'Projection {projection:.2f}.'
+        )
+        return True, projection, evidence
 
 
 def init_db():
@@ -702,17 +779,24 @@ with tab2:
         mu=st.number_input('Independent projection (mean)',value=21.0,step=.5); sigma=st.number_input('Estimated standard deviation',value=5.5,min_value=.01,step=.5,disabled=dist.startswith('Poisson'))
         market_over=st.number_input('No-vig market probability of OVER (%)',value=50.,min_value=0.,max_value=100.,step=.5)
         payout=st.number_input('Net payout per $1 winning selection (illustrative)',value=1.0,min_value=0.0,step=.1)
-    p=prob_model(mu,sigma,line,side,dist); mp=market_over/100 if side=='Over' else 1-market_over/100
-    edge=p-mp; ev=p*payout-(1-p)
-    m1,m2,m3,m4=st.columns(4)
-    m1.metric('Model hit estimate',f'{p:.1%}');m2.metric('Market estimate',f'{mp:.1%}');m3.metric('Model-market gap',f'{edge:+.1%}');m4.metric('Illustrative binary EV',f'{ev:+.1%}')
-    st.warning('This EV assumes a standalone binary payout. PrizePicks/Underdog multi-pick entries require joint probabilities, correlations and the exact payout table. Integer lines may push; this basic calculator does not model pushes.')
-    notes=st.text_area('Evidence / injury and lineup checks / source timestamps')
-    if st.button('Save as paper prediction'):
-        if not player.strip() or not event.strip(): st.error('Player and event required')
-        else:
-            add_pick({'sport':es,'event':event,'player':player,'market':market,'line':line,'side':side,'model_prob':p,'market_prob':mp,'edge':edge,'platform':platform,'payout_multiplier':payout,'notes':notes})
-            st.success('Paper prediction saved')
+    use_context, context_mean, context_notes = (
+        nba_projection_inputs() if es == 'NBA' else (False, None, '')
+    )
+    if use_context:
+        mu = context_mean
+    if mu is not None:
+        p=prob_model(mu,sigma,line,side,dist); mp=market_over/100 if side=='Over' else 1-market_over/100
+        edge=p-mp; ev=p*payout-(1-p)
+        m1,m2,m3,m4=st.columns(4)
+        m1.metric('Model hit estimate',f'{p:.1%}');m2.metric('Market estimate',f'{mp:.1%}');m3.metric('Model-market gap',f'{edge:+.1%}');m4.metric('Illustrative binary EV',f'{ev:+.1%}')
+        st.warning('This EV assumes a standalone binary payout. PrizePicks/Underdog multi-pick entries require joint probabilities, correlations and the exact payout table. Integer lines may push; this basic calculator does not model pushes.')
+        notes=st.text_area('Evidence / injury and lineup checks / source timestamps')
+        notes = '\n'.join(part for part in (context_notes, notes) if part)
+        if st.button('Save as paper prediction'):
+            if not player.strip() or not event.strip(): st.error('Player and event required')
+            else:
+                add_pick({'sport':es,'event':event,'player':player,'market':market,'line':line,'side':side,'model_prob':p,'market_prob':mp,'edge':edge,'platform':platform,'payout_multiplier':payout,'notes':notes})
+                st.success('Paper prediction saved')
 with tab3:
     st.subheader('Results and validation')
     with sqlite3.connect(DB) as conn: picks=pd.read_sql_query('SELECT * FROM picks ORDER BY id DESC',conn)
