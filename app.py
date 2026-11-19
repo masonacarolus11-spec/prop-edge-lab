@@ -422,6 +422,40 @@ def load_nba_game_log(season):
     return logs
 
 
+@st.cache_data(ttl=900, max_entries=2, show_spinner=False)
+def load_nba_injury_report(season):
+    from io import BytesIO
+
+    url = NBA_LOG_RELEASE.replace('nba_stats_player_game_logs', 'nba_stats_injury_report')
+    response = requests.get(f'{url}/injury_report_{season}.csv', timeout=(5, 15))
+    response.raise_for_status()
+    reports = pd.read_csv(BytesIO(response.content), low_memory=False)
+    required = {'game_date', 'report_datetime', 'away_team_abbr', 'home_team_abbr',
+                'person_id', 'current_status'}
+    if not required.issubset(reports.columns):
+        raise ValueError('Unexpected NBA injury report columns')
+    reports['game_date'] = pd.to_datetime(reports['game_date'], errors='coerce').dt.date
+    reports['report_datetime'] = pd.to_datetime(reports['report_datetime'], errors='coerce')
+    reports['person_id'] = pd.to_numeric(reports['person_id'], errors='coerce')
+    return reports
+
+
+def nba_injury_status(reports, date, team_codes, player_id):
+    if reports is None:
+        return 'Injury feed unavailable', None
+    matchup = reports.loc[reports['game_date'].eq(date)
+                          & reports['away_team_abbr'].eq(team_codes[0])
+                          & reports['home_team_abbr'].eq(team_codes[1])]
+    newest = matchup['report_datetime'].max()
+    if pd.isna(newest):
+        return 'No report found for matchup', None
+    statuses = matchup.loc[matchup['report_datetime'].eq(newest)
+                           & matchup['person_id'].eq(player_id), 'current_status'].dropna().unique()
+    if len(statuses) == 1:
+        return str(statuses[0]), str(newest)
+    return 'Availability unconfirmed', str(newest)
+
+
 def nba_name_key(value):
     import unicodedata
 
@@ -429,7 +463,7 @@ def nba_name_key(value):
     return ''.join(char for char in text if char.isalnum())
 
 
-def nba_automatic_context(logs, row, game_date):
+def nba_automatic_context(logs, row, game_date, injuries=None):
     stat = NBA_STAT_COLUMNS.get(row['market'])
     teams = str(row['event']).split(' at ', 1)
     if stat is None or len(teams) != 2:
@@ -474,17 +508,25 @@ def nba_automatic_context(logs, row, game_date):
         rate *= 1 + max(-0.08, min(0.08, 0.25 * (eligible[opponent] / eligible.mean() - 1)))
     projection = mean_minutes * rate
     deviation = float(player[stat].std())
+    injury, injury_timestamp = nba_injury_status(injuries, game_date, team_codes,
+                                               player.iloc[-1]['player_id'])
+    injury_key = injury.strip().casefold()
     status = 'Pregame model · lineup unverified'
+    if injury_key == 'out':
+        status = 'Hold · player reported out'
+    elif injury_key in ('questionable', 'doubtful'):
+        status = 'Hold · player availability uncertain'
     lean = None
     gap = None
     estimate = row.get('market_estimate_pct')
     market_side = row.get('side')
-    if pd.notna(estimate) and market_side in ('Over', 'Under') and deviation > 0:
+    if not status.startswith('Hold') and pd.notna(estimate) and market_side in ('Over', 'Under') and deviation > 0:
         market_over = (estimate if market_side == 'Over' else 100 - estimate) / 100
         lean, gap = research_pick_signal(projection, deviation, float(row['line']),
                                          'Normal (continuous approximation)', market_over, False)
     return {
-        'Auto status': status, 'Season average': round(float(player[stat].mean()), 2),
+        'Auto status': status, 'Injury report status': injury, 'Report time (Eastern)': injury_timestamp,
+        'Season average': round(float(player[stat].mean()), 2),
         'Last five average': round(float(recent[stat].mean()), 2),
         'Expected minutes': round(mean_minutes, 1),
         'Home/away average': round(float(same_venue[stat].mean()), 2) if not same_venue.empty else None,
@@ -499,7 +541,7 @@ def nba_automatic_context(logs, row, game_date):
 
 
 def show_auto_nba_board(picks, board_scope):
-    scope = sha256((repr(board_scope) + picks.to_json()).encode()).hexdigest()[:16]
+    scope = sha256((repr(board_scope) + picks.to_json() + str(int(dt.datetime.now(dt.timezone.utc).timestamp()) // 900)).encode()).hexdigest()[:16]
     with st.expander('Automatic NBA research', expanded=True):
         st.caption('Season, recent and matchup stats from NBA game logs via SportsDataverse. Uses zero Odds API credits.')
         saved = st.session_state.get('auto_nba_board')
@@ -509,11 +551,15 @@ def show_auto_nba_board(picks, board_scope):
                 season = today.year + int(today.month >= 9)
                 with st.spinner('Checking NBA game logs…'):
                     logs = load_nba_game_log(season)
+                    try:
+                        injuries = load_nba_injury_report(season)
+                    except (requests.RequestException, ValueError, KeyError, TypeError):
+                        injuries = None
                     rows = []
                     for _, row in picks.iterrows():
                         start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
                         date = today if pd.isna(start) else start.tz_convert('America/New_York').date()
-                        context = nba_automatic_context(logs[logs['game_date'] < date], row, date)
+                        context = nba_automatic_context(logs[logs['game_date'] < date], row, date, injuries)
                         rows.append({**row.to_dict(), **context})
                 saved = (scope, pd.DataFrame(rows))
                 st.session_state['auto_nba_board'] = saved
@@ -523,7 +569,7 @@ def show_auto_nba_board(picks, board_scope):
         st.dataframe(saved[1], hide_index=True, use_container_width=True)
         st.download_button('Download automatic NBA research', saved[1].to_csv(index=False),
                            'nba_automatic_research.csv', mime='text/csv')
-        st.caption('Team defense rank uses overall production allowed for the selected stat, with 1 allowing the least. Head-to-head and rest are shown for review. Current lineup and injury status, true usage rate, defense by position, coaching plans, blowout risk and opening prices still need separate verification.')
+        st.caption('Team defense rank uses overall production allowed for the selected stat, with 1 allowing the least. Head-to-head and rest are shown for review. Injury entries use the latest matchup report in the feed. Missing entries do not confirm availability. Starting lineups, usage rate, defense by position, coaching plans, blowout risk and opening prices still need separate verification.')
 
 
 def show_board_research(picks, sport, board_scope):
