@@ -13,6 +13,13 @@ st.title('📈 Prop Edge Lab')
 st.caption('Research prototype • paper testing only • no automatic bets • no guaranteed returns')
 DB = Path(os.getenv('PROP_DB', 'prop_scanner.sqlite'))
 SPORTS = {sport: source.odds_key for sport, source in SOURCES.items() if source.odds_key}
+PICK_MARKETS = {
+    'NBA': 'player_points,player_rebounds,player_assists',
+    'CBB': 'player_points,player_rebounds,player_assists',
+    'NFL': 'player_pass_yds,player_rush_yds,player_reception_yds',
+    'CFB': 'player_pass_yds,player_rush_yds,player_reception_yds',
+    'MLB': 'batter_hits,batter_total_bases,pitcher_strikeouts',
+}
 ALL_SPORTS = list(SOURCES)
 
 
@@ -131,6 +138,77 @@ def rank_sportsbook_prices(odds_df):
                                                ascending=[False, False]).reset_index(drop=True)
 
 
+def sportsbook_rows(data):
+    return pd.DataFrame([
+        {'book': book.get('title'), 'market': market.get('key'),
+         'player': offer.get('description', ''), 'side': offer.get('name'),
+         'line': offer.get('point'), 'odds': offer.get('price'),
+         'updated': market.get('last_update')}
+        for book in data.get('bookmakers', [])
+        for market in book.get('markets', [])
+        for offer in market.get('outcomes', [])
+    ])
+
+
+def top_picks(event_rankings):
+    if not event_rankings:
+        return pd.DataFrame()
+    ranked = pd.concat(event_rankings, ignore_index=True)
+    ranked = ranked[
+        (ranked['market_based_ev_pct'] > 0)
+        & (ranked['other_books'] >= 2)
+        & ranked['player'].fillna('').str.strip().ne('')
+    ]
+    return (
+        ranked.sort_values(['market_based_ev_pct', 'other_books'], ascending=False)
+        .drop_duplicates(['event_id', 'player', 'market'])
+        .head(10)
+        .drop(columns='event_id')
+        .reset_index(drop=True)
+    )
+
+
+def scan_top_picks(key, sport, regions):
+    events = fetch_events(key, SPORTS[sport])
+    now = dt.datetime.now(dt.timezone.utc)
+    upcoming = []
+    for event in events:
+        try:
+            start = dt.datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
+        except (KeyError, ValueError, AttributeError):
+            continue
+        if start.tzinfo and start > now:
+            upcoming.append((start, event))
+    upcoming.sort(key=lambda item: (item[0], item[1]['id']))
+
+    rankings, issues = [], []
+    checked = 0
+    for _, event in upcoming[:3]:
+        name = f"{event.get('away_team') or '?'} at {event.get('home_team') or '?'}"
+        try:
+            data, remaining = fetch_event_odds(
+                key, SPORTS[sport], event['id'], regions, PICK_MARKETS[sport]
+            )
+            ranked = rank_sportsbook_prices(sportsbook_rows(data))
+        except ProviderError as exc:
+            issues.append(f'{name} — {exc}')
+            if exc.code in ('access_denied', 'rate_limited'):
+                break
+            continue
+        except (TypeError, AttributeError):
+            issues.append(f'{name} — Unexpected odds data.')
+            continue
+        checked += 1
+        if not ranked.empty:
+            rankings.append(ranked.assign(event=name, event_id=event['id'],
+                                          starts_utc=event['commence_time']))
+        if remaining == '0':
+            issues.append('The provider reported zero remaining credits at fetch time.')
+            break
+
+    return top_picks(rankings), checked, min(len(upcoming), 3), issues
+
+
 def normalize_upload(df):
     required={'sport','event','player','market','line','platform'}
     missing=required-set(df.columns)
@@ -151,8 +229,41 @@ with st.sidebar:
     st.info('Streamlit Community Cloud local SQLite storage is ephemeral. Export CSV regularly. For persistent multi-device history, connect a hosted database later.')
     st.markdown('[Get an API key](https://the-odds-api.com/) · [Deploy Streamlit](https://share.streamlit.io/)')
 
-tab1,tab2,tab3,tab4,research=st.tabs(['🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup','Research sources'])
+best,tab1,tab2,tab3,tab4,research=st.tabs(['Best picks', '🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup','Research sources'])
 key_id = sha256(api_key.encode()).hexdigest()
+with best:
+    st.subheader('Top 10 picks by sport')
+    st.caption('Ranks offers by price against at least two other sportsbooks at the same line. Estimates are based on sportsbook prices.')
+    pick_sport = st.selectbox('Pick sport', ALL_SPORTS)
+    pick_region = st.selectbox('Sportsbook region', ['us', 'us2', 'uk', 'eu', 'au'])
+    if pick_sport not in PICK_MARKETS:
+        st.info(f'Automated player-prop rankings for {pick_sport} are pending verified market coverage. See Research sources.')
+    else:
+        st.caption('Checks up to three upcoming events and three markets per event. Up to nine provider credits per scan.')
+        pick_scope = (key_id, pick_sport, pick_region)
+        if st.button('Find top picks', disabled=not api_key):
+            st.session_state.pop('best_picks', None)
+            try:
+                with st.spinner('Checking sportsbook prices…'):
+                    result = scan_top_picks(api_key, pick_sport, pick_region)
+                st.session_state['best_picks'] = (pick_scope, result, dt.datetime.now(dt.timezone.utc))
+            except ProviderError as exc:
+                st.error(str(exc))
+        if not api_key:
+            st.info('Enter an Odds API key to scan for offers.')
+        saved = st.session_state.get('best_picks')
+        if saved and saved[0] == pick_scope:
+            picks, checked, targeted, issues = saved[1]
+            st.caption(f'Scan completed {saved[2]:%Y-%m-%d %H:%M UTC} · {checked} of {targeted} selected events checked.')
+            for issue in issues:
+                st.warning(issue)
+            if picks.empty:
+                st.info('No qualifying offers were found in the events checked.')
+            else:
+                st.dataframe(picks, hide_index=True, use_container_width=True)
+                st.download_button('Download top picks', picks.to_csv(index=False),
+                                   f'{pick_sport.lower()}_top_picks.csv', mime='text/csv')
+
 with tab1:
     st.subheader('Live sportsbook market discovery')
     sport=st.selectbox('Sport',list(SPORTS),key='live_sport')
@@ -181,14 +292,10 @@ with tab1:
             st.session_state.pop('scoped_odds', None)
             try:
                 data,remaining=fetch_event_odds(api_key,SPORTS[sport],options[chosen],regions,markets)
-                rows=[]
-                for book in data.get('bookmakers',[]):
-                    for m in book.get('markets',[]):
-                        for o in m.get('outcomes',[]):
-                            rows.append({'book':book.get('title'),'market':m.get('key'),'player':o.get('description',''),'side':o.get('name'),'line':o.get('point'),'odds':o.get('price'),'updated':m.get('last_update')})
-                st.session_state['scoped_odds'] = (odds_scope, pd.DataFrame(rows))
+                frame = sportsbook_rows(data)
+                st.session_state['scoped_odds'] = (odds_scope, frame)
                 st.caption(f'Remaining credits when fetched: {remaining or "not reported"}')
-                if not rows: st.info('No offers were returned for these markets.')
+                if frame.empty: st.info('No offers were returned for these markets.')
             except ProviderError as exc: st.error(str(exc))
             except (TypeError, AttributeError): st.error('The provider returned unexpected odds data.')
     saved_scope, saved_odds = st.session_state.get('scoped_odds', (None, None))
