@@ -150,25 +150,35 @@ def sportsbook_rows(data):
     ])
 
 
-def top_picks(event_rankings):
+def match_prizepicks(event_rankings, board):
     if not event_rankings:
         return pd.DataFrame()
     ranked = pd.concat(event_rankings, ignore_index=True)
-    ranked = ranked[ranked['player'].fillna('').str.strip().ne('')]
-    # Keep every comparable price eligible, while prioritizing stronger positive comparisons.
-    ranked = ranked.assign(
-        _strong=(ranked['market_based_ev_pct'] > 0) & (ranked['other_books'] >= 2)
+    fields = ['event', 'player', 'market', 'line']
+    for frame in (ranked, board):
+        for field in fields[:-1]:
+            frame[field + '_key'] = frame[field].astype('string').str.strip().str.casefold()
+    keys = [field + '_key' for field in fields[:-1]] + ['line']
+    consensus = (
+        ranked.drop_duplicates(keys + ['side', 'book'])
+        .groupby(keys + ['side'], as_index=False)
+        .agg(market_estimate_pct=('peer_fair_probability', 'median'),
+             comparison_books=('book', 'nunique'))
     )
+    matches = board.merge(consensus, on=keys)
     return (
-        ranked.sort_values(['_strong', 'market_based_ev_pct', 'other_books'], ascending=False)
-        .drop_duplicates(['event_id', 'player', 'market'])
-        .head(10)
-        .drop(columns=['event_id', '_strong'])
+        matches.sort_values(['market_estimate_pct', 'comparison_books'], ascending=False)
+        .drop_duplicates(keys)
+        .head(10)[fields + ['side', 'market_estimate_pct', 'comparison_books']]
         .reset_index(drop=True)
     )
 
 
-def scan_top_picks(key, sport, regions):
+def event_label(event):
+    return f"{event.get('away_team') or '?'} at {event.get('home_team') or '?'}"
+
+
+def scan_top_picks(key, sport, regions, board):
     events = fetch_events(key, SPORTS[sport])
     now = dt.datetime.now(dt.timezone.utc)
     upcoming = []
@@ -179,12 +189,17 @@ def scan_top_picks(key, sport, regions):
             continue
         if start.tzinfo and start > now:
             upcoming.append((start, event))
+    board_events = set(board['event'].str.strip().str.casefold())
+    upcoming = [
+        (start, event) for start, event in upcoming
+        if event_label(event).casefold() in board_events
+    ]
     upcoming.sort(key=lambda item: (item[0], item[1]['id']))
 
     rankings, issues = [], []
     checked = 0
     for _, event in upcoming[:3]:
-        name = f"{event.get('away_team') or '?'} at {event.get('home_team') or '?'}"
+        name = event_label(event)
         try:
             data, remaining = fetch_event_odds(
                 key, SPORTS[sport], event['id'], regions, PICK_MARKETS[sport]
@@ -200,13 +215,12 @@ def scan_top_picks(key, sport, regions):
             continue
         checked += 1
         if not ranked.empty:
-            rankings.append(ranked.assign(event=name, event_id=event['id'],
-                                          starts_utc=event['commence_time']))
+            rankings.append(ranked.assign(event=name))
         if remaining == '0':
             issues.append('The provider reported zero remaining credits at fetch time.')
             break
 
-    return top_picks(rankings), checked, min(len(upcoming), 3), issues
+    return match_prizepicks(rankings, board.copy()), checked, min(len(upcoming), 3), issues
 
 
 def normalize_upload(df):
@@ -232,38 +246,58 @@ with st.sidebar:
 best,tab1,tab2,tab3,tab4,research=st.tabs(['Best picks', '🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup','Research sources'])
 key_id = sha256(api_key.encode()).hexdigest()
 with best:
-    st.subheader('Top 10 picks by sport')
-    st.caption('Compares prices at the same line. Positive estimates backed by two or more other books appear first. Lower-ranked offers may have one comparison book or a zero or negative estimate.')
+    st.subheader('Top 10 PrizePicks matches by sport')
+    st.caption('Upload current PrizePicks lines. The app ranks matched lines by sportsbook consensus estimates. PrizePicks entry payouts are separate.')
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS)
     pick_region = st.selectbox('Sportsbook region', ['us', 'us2', 'uk', 'eu', 'au'])
     if pick_sport not in PICK_MARKETS:
-        st.info(f'Automated player-prop rankings for {pick_sport} are pending verified market coverage. See Research sources.')
+        st.info(f'Automated player-prop comparisons for {pick_sport} are pending verified market coverage.')
     else:
-        st.caption('Checks up to three upcoming events and three markets per event. Up to nine provider credits per scan.')
-        pick_scope = (key_id, pick_sport, pick_region)
-        if st.button('Find top picks', disabled=not api_key):
-            st.session_state.pop('best_picks', None)
+        allowed_markets = PICK_MARKETS[pick_sport].split(',')
+        template = pd.DataFrame(columns=['sport', 'event', 'player', 'market', 'line', 'platform'])
+        st.download_button('Download PrizePicks CSV template', template.to_csv(index=False),
+                           'prizepicks_template.csv', mime='text/csv')
+        st.caption(f'Use Away Team at Home Team for event, PrizePicks for platform, and one of these market keys for {pick_sport}: {", ".join(allowed_markets)}.')
+        upload = st.file_uploader('Upload current PrizePicks lines', type='csv', key='prizepicks_board')
+        board = pd.DataFrame()
+        board_id = None
+        if upload:
+            board_id = sha256(upload.getvalue()).hexdigest()
             try:
-                with st.spinner('Checking sportsbook prices…'):
-                    result = scan_top_picks(api_key, pick_sport, pick_region)
-                st.session_state['best_picks'] = (pick_scope, result, dt.datetime.now(dt.timezone.utc))
+                board = normalize_upload(pd.read_csv(upload))
+                board = board.dropna(subset=['event', 'player']).loc[
+                    lambda rows: rows['sport'].astype(str).str.strip().str.casefold().eq(pick_sport.casefold())
+                    & rows['platform'].astype(str).str.strip().str.casefold().eq('prizepicks')
+                    & rows['market'].astype(str).str.strip().str.casefold().isin(allowed_markets)
+                ]
+                if board.empty:
+                    st.info('No supported PrizePicks lines for this sport were found in the file.')
+            except (ValueError, TypeError) as exc:
+                st.error(str(exc))
+        st.caption('Checks up to three upcoming events that match the upload. A scan can use up to nine provider credits.')
+        pick_scope = (key_id, pick_sport, pick_region, board_id)
+        if st.button('Find top picks', disabled=not api_key or board.empty):
+            st.session_state.pop('prizepicks_matches', None)
+            try:
+                with st.spinner('Comparing PrizePicks lines…'):
+                    result = scan_top_picks(api_key, pick_sport, pick_region, board)
+                st.session_state['prizepicks_matches'] = (pick_scope, result)
             except ProviderError as exc:
                 st.error(str(exc))
         if not api_key:
-            st.info('Enter an Odds API key to scan for offers.')
-        saved = st.session_state.get('best_picks')
+            st.info('Enter an Odds API key to compare lines.')
+        saved = st.session_state.get('prizepicks_matches')
         if saved and saved[0] == pick_scope:
             picks, checked, targeted, issues = saved[1]
-            st.caption(f'Scan completed {saved[2]:%Y-%m-%d %H:%M UTC} · {checked} of {targeted} selected events checked.')
+            st.caption(f'{checked} of {targeted} selected events checked.')
             for issue in issues:
                 st.warning(issue)
             if picks.empty:
-                st.info('No qualifying offers were found in the events checked.')
+                st.info('No exact PrizePicks matches. Check the matchup names, player names, markets and lines in the upload.')
             else:
-                st.caption(f'Showing {len(picks)} of up to 10 comparable offers. Check other_books and market_based_ev_pct before using a result.')
                 st.dataframe(picks, hide_index=True, use_container_width=True)
-                st.download_button('Download top picks', picks.to_csv(index=False),
-                                   f'{pick_sport.lower()}_top_picks.csv', mime='text/csv')
+                st.download_button('Download PrizePicks matches', picks.to_csv(index=False),
+                                   f'{pick_sport.lower()}_prizepicks.csv', mime='text/csv')
 
 with tab1:
     st.subheader('Live sportsbook market discovery')
