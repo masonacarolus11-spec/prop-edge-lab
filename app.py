@@ -21,6 +21,7 @@ from sport_sources import SOURCES, competitions, source_rows
 from sport_boards import BOARD_SOURCES, TEAM_MODELS, load_sport_board, project_team_game
 from cs2_props import (MAP_MARKETS, cs2_projection, cs2_start, grade_cs2_pick,
                        load_cs2_history, load_cs2_match_stats, search_cs2_players)
+from nba_rebounds import missed_shot_profiles
 
 st.set_page_config(page_title='Edge Lab', page_icon='📈', layout='wide')
 st.title('📈 Edge Lab')
@@ -460,6 +461,11 @@ def show_nba_review(sport):
                                       'value': row['stat']}), hide_index=True)
     show_minutes_check(row['projection'], games['mins'].mean(), row['line'],
                        games['mins'].min(), games['mins'].max(), f"review_minutes:{index}")
+    if row['stat'] == 'Rebounds':
+        snapshot = json.loads(
+            Path(__file__).with_name('nba-rebound-misses-2026-11-23.json').read_text(encoding='utf-8')
+        )
+        show_rebound_opportunity(snapshot.get(row['opponent'], {}))
     st.markdown('#### Availability and matchup')
     away, _, home = row['match'].partition(' at ')
     venue = 'home' if row['team'] == home else 'away'
@@ -1042,6 +1048,7 @@ def nba_automatic_context(logs, row, game_date, injuries=None, role_history=None
         'Auto status': status, 'Injury report status': injury, 'Report time (Eastern)': injury_timestamp,
         'NBA player ID': int(player.iloc[-1]['player_id']),
         'NBA away team': team_codes[0], 'NBA home team': team_codes[1],
+        'NBA opponent team': opponent,
         'Season average': round(float(player[stat].mean()), 2),
         'Last five average': round(float(recent[stat].mean()), 2),
         'Expected minutes': round(mean_minutes, 1),
@@ -1204,6 +1211,7 @@ def automatic_nba_board(picks, board_scope):
                     role_history = None
                 rows = []
                 game_models = {}
+                rebound_inputs = {}
                 for _, row in picks.iterrows():
                     start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
                     date = today if pd.isna(start) else start.tz_convert('America/New_York').date()
@@ -1213,7 +1221,12 @@ def automatic_nba_board(picks, board_scope):
                     matchup = date, away, home
                     if away and home and matchup not in game_models:
                         game_models[matchup] = project_nba_matchup(history, away, home)
-                    rows.append({**row.to_dict(), **context, **game_models.get(matchup, {})})
+                    shot_context = {}
+                    if row['market'] == 'player_rebounds' and context.get('NBA opponent team'):
+                        if date not in rebound_inputs:
+                            rebound_inputs[date] = missed_shot_profiles(history, date)
+                        shot_context = rebound_inputs[date].get(context['NBA opponent team'], {})
+                    rows.append({**row.to_dict(), **context, **game_models.get(matchup, {}), **shot_context})
             saved = (scope, pd.DataFrame(rows))
             st.session_state['auto_nba_board'] = saved
         except (requests.RequestException, ValueError, KeyError, TypeError):
@@ -1582,11 +1595,33 @@ def show_minutes_check(projection, expected_minutes, line, low, high, key):
     st.caption(f'Projection reaches the line at {crossing:.1f} minutes. The scenario holds production per minute steady.')
 
 
+def show_rebound_opportunity(values):
+    st.markdown('#### Opponent missed shots')
+    average = values.get('Opponent missed field goals per game')
+    if pd.isna(average):
+        st.caption('No verified opponent shot sample is available for this game.')
+        return
+    league = values['League missed field goals per game']
+    recent = values.get('Opponent missed field goals last five')
+    columns = st.columns(3)
+    columns[0].metric('Opponent misses per game', f'{average:.1f}', delta=f'{average - league:+.1f} vs league')
+    columns[1].metric('Opponent misses · last five', f'{recent:.1f}' if pd.notna(recent) else '—')
+    columns[2].metric('League misses per game', f'{league:.1f}')
+    st.caption(
+        f"{int(values['Opponent shot sample games'])} opponent games before tip-off. "
+        "Field-goal attempts minus makes. More misses can create more defensive-rebound opportunities. "
+        "This is matchup context and leaves the player projection unchanged."
+    )
+    st.markdown('[Basketball game-log source](https://github.com/sportsdataverse/sportsdataverse-data/releases/tag/nba_stats_player_game_logs)')
+
+
 def show_scanned_nba_context(row, key):
     show_minutes_check(
         row.get('Projected stat'), row.get('Expected minutes'), float(row['line']),
         row.get('Recent low minutes'), row.get('Recent high minutes'), key,
     )
+    if row['market'] == 'player_rebounds':
+        show_rebound_opportunity(row)
     st.markdown('#### Matchup availability')
     st.caption(f"Injury report: {row.get('Injury report status', 'unavailable')}")
     timestamp = row.get('Report time (Eastern)')
@@ -2097,7 +2132,8 @@ def show_best_picks_board(picks, sport, board_scope):
     columns = [
         'player', 'market', 'line', 'Model signal', 'Projected stat',
         'side', 'market_estimate_pct', 'comparison_books', 'Auto status', 'Injury report status',
-        'Pregame recheck', 'Minutes sensitivity', 'Weather review', 'status', 'event',
+        'Pregame recheck', 'Minutes sensitivity', 'Opponent missed field goals per game',
+        'Weather review', 'status', 'event',
     ]
     visible = [column for column in columns if column in full_board]
     game_columns = ['event', 'Projected away score', 'Projected home score',

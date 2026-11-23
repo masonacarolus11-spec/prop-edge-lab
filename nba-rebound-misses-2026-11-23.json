@@ -1,0 +1,98 @@
+{
+  "Brooklyn Nets": {
+    "Opponent missed field goals per game": 46.4,
+    "Opponent missed field goals last five": 44.0,
+    "Opponent shot sample games": 15,
+    "League missed field goals per game": 47.4
+  },
+  "Chicago Bulls": {
+    "Opponent missed field goals per game": 49.3,
+    "Opponent missed field goals last five": 48.2,
+    "Opponent shot sample games": 16,
+    "League missed field goals per game": 47.4
+  },
+  "Cleveland Cavaliers": {
+    "Opponent missed field goals per game": 47.2,
+    "Opponent missed field goals last five": 46.4,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "Indiana Pacers": {
+    "Opponent missed field goals per game": 46.1,
+    "Opponent missed field goals last five": 46.4,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "LA Clippers": {
+    "Opponent missed field goals per game": 45.5,
+    "Opponent missed field goals last five": 44.4,
+    "Opponent shot sample games": 15,
+    "League missed field goals per game": 47.4
+  },
+  "Los Angeles Lakers": {
+    "Opponent missed field goals per game": 43.2,
+    "Opponent missed field goals last five": 49.2,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "Memphis Grizzlies": {
+    "Opponent missed field goals per game": 46.3,
+    "Opponent missed field goals last five": 42.6,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "Milwaukee Bucks": {
+    "Opponent missed field goals per game": 50.8,
+    "Opponent missed field goals last five": 51.2,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "Minnesota Timberwolves": {
+    "Opponent missed field goals per game": 46.5,
+    "Opponent missed field goals last five": 45.2,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "New Orleans Pelicans": {
+    "Opponent missed field goals per game": 47.4,
+    "Opponent missed field goals last five": 52.0,
+    "Opponent shot sample games": 18,
+    "League missed field goals per game": 47.4
+  },
+  "Oklahoma City Thunder": {
+    "Opponent missed field goals per game": 48.4,
+    "Opponent missed field goals last five": 45.8,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "Philadelphia 76ers": {
+    "Opponent missed field goals per game": 46.6,
+    "Opponent missed field goals last five": 41.0,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "Phoenix Suns": {
+    "Opponent missed field goals per game": 46.6,
+    "Opponent missed field goals last five": 46.8,
+    "Opponent shot sample games": 15,
+    "League missed field goals per game": 47.4
+  },
+  "Portland Trail Blazers": {
+    "Opponent missed field goals per game": 46.2,
+    "Opponent missed field goals last five": 48.2,
+    "Opponent shot sample games": 16,
+    "League missed field goals per game": 47.4
+  },
+  "San Antonio Spurs": {
+    "Opponent missed field goals per game": 48.5,
+    "Opponent missed field goals last five": 47.0,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "Utah Jazz": {
+    "Opponent missed field goals per game": 47.2,
+    "Opponent missed field goals last five": 42.4,
+    "Opponent shot sample games": 18,
+    "League missed field goals per game": 47.4
+  }
+}
