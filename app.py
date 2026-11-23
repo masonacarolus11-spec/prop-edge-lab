@@ -382,6 +382,25 @@ def show_supplemental_sport_board(sport):
         st.caption('The team-score baseline blends season and last-five scoring and opponent points or runs allowed. Neutral-site and roster effects are not modeled.')
 
 
+def show_cs2_review(sport):
+    if sport != 'CS2' or st.query_params.get('cs2_review') != '2026-11-23':
+        return
+    path = Path(__file__).with_name('cs2-review-2026-11-23.json')
+    rows = json.loads(path.read_text(encoding='utf-8'))
+    report = pd.DataFrame(rows)
+    st.subheader('10 CS2 prop reviews · November 23')
+    st.caption('One pregame lean and nine completed-map results. The completed rows compare published lines with final kills.')
+    st.dataframe(report, hide_index=True)
+    st.caption('sk0R’s historical average is the figure reported by PickFinder. These are dated observations and the live lines may move.')
+    st.markdown(
+        '[Reported upcoming line](https://www.pickfinder.app/best-prizepicks-picks/cs2) · '
+        '[Reported two-map lines](https://propavix.com/props) · '
+        '[Final map stats](https://www.hltv.org/matches/2400373/virtuspro-vs-iberian-soul-nodwin-clutch-series-14)'
+    )
+    st.download_button('Download the 10 CS2 reviews', report.to_csv(index=False),
+                       'cs2-review-2026-11-23.csv', mime='text/csv')
+
+
 @st.cache_data(ttl=86400, max_entries=128, show_spinner=False)
 def find_weather_locations(city):
     response = requests.get(
@@ -2490,6 +2509,7 @@ with best:
     requested_sport = st.query_params.get('sport')
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS,
                              index=ALL_SPORTS.index(requested_sport) if requested_sport in ALL_SPORTS else 0)
+    show_cs2_review(pick_sport)
     show_supplemental_sport_board(pick_sport)
     with st.expander(f'{pick_sport} research sources'):
         show_research_links(pick_sport)
