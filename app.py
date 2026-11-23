@@ -18,6 +18,7 @@ from report_card import (
     save_report_picks,
 )
 from sport_sources import SOURCES, competitions, source_rows
+from sport_boards import BOARD_SOURCES, TEAM_MODELS, load_sport_board, project_team_game
 
 st.set_page_config(page_title='Edge Lab', page_icon='📈', layout='wide')
 st.title('📈 Edge Lab')
@@ -182,6 +183,82 @@ def show_research_links(sport):
     for category, label, url, description in (*RESEARCH_LINKS[sport], *ADDITIONAL_RESEARCH_LINKS[sport]):
         st.markdown(f'**{category}** · [{label}]({url})  \n{description}')
     st.caption('Manual research links · Open a source for current information. The scan does not fetch these pages or use them to rank props.')
+
+
+cached_sport_board = st.cache_data(ttl=120, max_entries=32, show_spinner=False)(load_sport_board)
+cached_team_projection = st.cache_data(ttl=1800, max_entries=64, show_spinner=False)(project_team_game)
+
+
+def show_supplemental_sport_board(sport):
+    if sport not in BOARD_SOURCES:
+        return
+    with st.expander(f'{sport} scoreboard and schedule'):
+        st.caption(f'{BOARD_SOURCES[sport]} · No Odds API credits.')
+        panda_key = ''
+        if sport == 'CS2':
+            try:
+                default = st.secrets.get('PANDASCORE_TOKEN', os.getenv('PANDASCORE_TOKEN', ''))
+            except FileNotFoundError:
+                default = os.getenv('PANDASCORE_TOKEN', '')
+            panda_key = st.text_input('PandaScore token', value=default, type='password').strip()
+            if not panda_key:
+                st.info('Enter a PandaScore token to load scheduled, live, and recent CS2 matches.')
+                return
+        load = st.button(f'Load {sport} scoreboard')
+        scope = sport, sha256(panda_key.encode()).hexdigest()
+        if load:
+            st.session_state['supplemental_board'] = scope
+        if st.session_state.get('supplemental_board') != scope:
+            return
+        today = dt.datetime.now(ZoneInfo('America/Los_Angeles')).date()
+        day = st.date_input(f'{sport} scoreboard date', value=today) if sport in TEAM_MODELS else today
+        end = day + dt.timedelta(days=7 if sport == 'MLB' else 0)
+        try:
+            rows = cached_sport_board(sport, day, end, panda_key)
+        except (requests.RequestException, KeyError, TypeError, ValueError):
+            st.warning('The scoreboard source is unavailable for this request.')
+            return
+        if not rows:
+            st.info('The source returned no events for this view.')
+            return
+        board = pd.DataFrame(rows)
+        columns = [name for name in ('Event', 'Competition', 'Golfer', 'Start (UTC)', 'Status', 'Score')
+                   if name in board and board[name].notna().any()]
+        st.dataframe(board[columns], hide_index=True)
+        st.caption('Event scores provide game context. They do not grade player props.')
+        if sport not in TEAM_MODELS:
+            return
+        eligible = {
+            index: row for index, row in enumerate(rows)
+            if row.get('_phase') == 'pre' and all(row.get(key) for key in ('_away', '_home', '_season'))
+        }
+        if not eligible:
+            st.caption('No upcoming matchup with verified team IDs and season data in this view.')
+            return
+        selected = st.selectbox('Matchup to project', eligible, format_func=lambda index: eligible[index]['Event'],
+                                key=f'{sport}:fixture_model')
+        row = eligible[selected]
+        start = pd.to_datetime(row['Start (UTC)'], utc=True, errors='coerce')
+        if pd.isna(start) or start <= pd.Timestamp.now(tz='UTC'):
+            return
+        try:
+            projection = cached_team_projection(
+                sport, row['_away'], row['_home'], row['_season'],
+                start.tz_convert('America/New_York').to_pydatetime(),
+            )
+        except (requests.RequestException, KeyError, TypeError, ValueError):
+            st.warning('Team history is unavailable for this matchup.')
+            return
+        if projection is None:
+            st.info('Each team needs five verified final games before the baseline can be calculated.')
+            return
+        away, home, spread, total = projection
+        for column, label, value in zip(
+            st.columns(4), ('Away projection', 'Home projection', 'Model home spread', 'Model total'),
+            (away, home, spread, total),
+        ):
+            column.metric(label, f'{value:g}')
+        st.caption('The team-score baseline blends season and last-five scoring and opponent points or runs allowed. Neutral-site and roster effects are not modeled.')
 
 
 @st.cache_data(ttl=86400, max_entries=128, show_spinner=False)
@@ -2270,6 +2347,7 @@ with best:
         board_ids.append(sha256(upload.getvalue()).hexdigest())
 
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS)
+    show_supplemental_sport_board(pick_sport)
     with st.expander(f'{pick_sport} research sources'):
         show_research_links(pick_sport)
     if pick_sport in ('NFL', 'CFB'):
@@ -2518,8 +2596,10 @@ with research:
             'Line recheck': 'On repeat feed scan' if sport in PICK_MARKETS else 'Feed pending',
             'Timed checks and late quotes': 'Tracked picks, session open' if sport in ('NBA', 'NFL') else 'Pending',
             'Live view': ('Score, clock and player stats' if sport == 'NBA' else
-                          'Score and clock' if sport == 'NFL' else 'Pending'),
-            'Score, spread and total projections': 'Game-history baseline' if sport in ('NBA', 'NFL') else 'Pending',
+                          'Score and clock' if sport == 'NFL' else
+                          'Match scoreboard · token required' if sport == 'CS2' else 'Event scoreboard'),
+            'Score, spread and total projections': ('Game-history baseline' if sport in ('NBA', 'NFL')
+                                                    or sport in TEAM_MODELS else 'Pending'),
             'Report Card grading': 'Supported player stats' if sport in ('NBA', 'NFL') else 'Pending',
         }
         for sport in ALL_SPORTS
