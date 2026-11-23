@@ -1,4 +1,4 @@
-# Prop Edge Lab — $0 prototype
+# Edge Lab — $0 prototype
 
 A Streamlit research app with live odds-provider integration (when supported by the user's API plan), no-vig sportsbook consensus, manual PrizePicks/Underdog CSV import, distribution-based probability estimation, and paper-pick tracking.
 
@@ -16,7 +16,7 @@ streamlit run app.py
 5. Visit your Streamlit app URL on your iPhone; add it to your home screen if desired.
 
 ## Important constraints
-The Odds API free-plan quota and access to event-level player props can be limited. No provider key is included. PrizePicks/Underdog odds are NOT automatically retrieved. The staged background job discovers events. Player-stat and injury adapters are pending. Uploaded CSV lines are not auto-matched. No claims of profitability. Local SQLite data on Streamlit Cloud may disappear on restart; export CSV regularly.
+The Odds API free-plan quota and access to event-level player props can be limited. No provider key is included. Best picks can load timestamped PrizePicks lines when The Odds API plan and market coverage allow it. NBA and NFL have automated player research and Report Card support for selected markets. In-session pregame monitoring is optional and has a six-credit limit. Other sports have partial coverage shown in Research sources. The separate background job discovers events. No claims of profitability. Local SQLite data on Streamlit Cloud may disappear on restart; export CSV regularly.
 
 ## Data sources and permissions
 Use authorized data feeds. Do not bypass platform access controls or violate site terms. All real market observations should be timestamped. Paper-test out of sample and use actual multi-pick payouts before estimating ROI.

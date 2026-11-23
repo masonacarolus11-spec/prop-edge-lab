@@ -1,4 +1,6 @@
 import os, sqlite3, math, json, datetime as dt
+import re
+from urllib.parse import urlsplit
 from collections import Counter
 from zoneinfo import ZoneInfo
 
@@ -10,10 +12,15 @@ from hashlib import sha256
 import streamlit as st
 from scipy.stats import norm, poisson
 from odds_provider import OddsAPI, ProviderError
+from report_card import (
+    NBA_BOX_STATS, closing_line_gain, grade_nba_pick, grade_score, init_report_card,
+    score_projection, observe_pregame_changes, pregame_window, save_closing_quotes,
+    save_report_picks,
+)
 from sport_sources import SOURCES, competitions, source_rows
 
-st.set_page_config(page_title='Prop Edge Lab', page_icon='📈', layout='wide')
-st.title('📈 Prop Edge Lab')
+st.set_page_config(page_title='Edge Lab', page_icon='📈', layout='wide')
+st.title('📈 Edge Lab')
 st.caption('Research prototype • paper testing only • no automatic bets • no guaranteed returns')
 DB = Path(os.getenv('PROP_DB', 'prop_scanner.sqlite'))
 SPORTS = {sport: source.odds_key for sport, source in SOURCES.items() if source.odds_key}
@@ -105,10 +112,76 @@ RESEARCH_LINKS = {
 }
 
 
+ADDITIONAL_RESEARCH_LINKS = {
+    "NBA": (
+        ("Minutes and usage", "NBA Advanced Stats", "https://www.nba.com/stats/players/advanced", "Usage rate, pace and efficiency."),
+        ("Rotation history", "NBA Box Scores", "https://www.nba.com/games", "Official box scores and minutes by game."),
+        ("Shot profile", "NBA Shooting Dashboard", "https://www.nba.com/stats/players/shots-general", "Shot frequency and accuracy by shot type."),
+        ("Play types", "NBA Play Type Stats", "https://www.nba.com/stats/players/isolation", "Possessions and efficiency by play type."),
+        ("Schedule and rest", "Basketball Reference NBA", "https://www.basketball-reference.com/leagues/", "Season schedules, box scores and historical splits."),
+    ),
+    "CBB": (
+        ("Team efficiency", "KenPom", "https://kenpom.com/", "Adjusted efficiency, tempo and schedule strength. Some features are paid."),
+        ("Tempo and matchups", "Bart Torvik", "https://barttorvik.com/", "Tempo-free team ratings and date filters."),
+        ("Team and player history", "Sports Reference College Basketball", "https://www.sports-reference.com/cbb/", "Historical rosters, schedules and game logs."),
+        ("Scores and box scores", "ESPN Men’s College Basketball Scoreboard", "https://www.espn.com/mens-college-basketball/scoreboard", "Matchups, box scores and minutes when posted."),
+        ("Selection context", "NCAA NET Rankings", "https://www.ncaa.com/rankings/basketball-men/d1/ncaa-mens-basketball-net-rankings", "Team NET rankings and opponent context."),
+    ),
+    "NFL": (
+        ("Tracking", "NFL Next Gen Stats", "https://nextgenstats.nfl.com/stats/", "Tracking metrics for passing, rushing and receiving."),
+        ("Usage and snaps", "Pro Football Reference NFL Season", "https://www.pro-football-reference.com/years/2026/", "Navigate to a team for its player snap counts and season stats."),
+        ("Play-by-play", "NFL Game Center", "https://www.nfl.com/scores/", "Official gamebooks, box scores and play-by-play."),
+        ("Inactive checks", "NFL News", "https://www.nfl.com/news/", "Pregame inactive notices when published."),
+        ("Weather", "National Weather Service", "https://www.weather.gov/", "US stadium-area forecasts for wind and precipitation."),
+    ),
+    "CFB": (
+        ("Team efficiency", "ESPN College Football FPI", "https://www.espn.com/college-football/fpi", "Team strength and schedule context."),
+        ("Box scores", "ESPN College Football Scoreboard", "https://www.espn.com/college-football/scoreboard", "Game logs, box scores and play-by-play."),
+        ("Historical usage", "Sports Reference College Football", "https://www.sports-reference.com/cfb/", "Player and team game history."),
+        ("Availability", "Big Ten Football Availability Reporting", "https://bigten.org/news/2026/8/28/big-ten-announces-changes-to-football-availability-reporting-process.aspx", "Explains the conference reporting schedule and where to find game-day updates."),
+        ("Weather", "National Weather Service", "https://www.weather.gov/", "US stadium-area forecasts for wind and precipitation."),
+    ),
+    "MLB": (
+        ("Projections and splits", "FanGraphs", "https://www.fangraphs.com/", "Depth charts, player projections and splits. Some tools require membership."),
+        ("Historical splits", "Baseball Reference", "https://www.baseball-reference.com/", "Player game logs, splits and historical box scores."),
+        ("Roster moves", "MLB Transactions", "https://www.mlb.com/transactions", "Official roster moves and injured-list transactions."),
+        ("Prospect call-ups", "MLB Pipeline", "https://www.mlb.com/prospects", "Prospect profiles and call-up context."),
+        ("Scores and game logs", "MLB Scores", "https://www.mlb.com/scores", "Official box scores, game status and play-by-play."),
+    ),
+    "CS2": (
+        ("Tournament and roster history", "Liquipedia Counter-Strike", "https://liquipedia.net/counterstrike/Main_Page", "Event brackets and roster history. Confirm stand-ins with organizers."),
+        ("Event operations", "ESL Pro Tour Counter-Strike", "https://pro.eslgaming.com/tour/cs/", "ESL event schedules, teams and tournament information."),
+        ("Event operations", "BLAST Premier", "https://blast.tv/cs", "BLAST schedules, results and event coverage."),
+        ("Game changes", "Valve Counter-Strike News", "https://www.counter-strike.net/news", "Official patch and map-pool updates."),
+        ("Team strength", "Valve Regional Standings", "https://github.com/ValveSoftware/counter-strike_regional_standings", "Valve standings and ranking methodology."),
+    ),
+    "Tennis": (
+        ("Surface and matchup", "Tennis Abstract", "https://www.tennisabstract.com/", "Surface splits, player history and matchup research."),
+        ("Lower-tour results", "ITF World Tennis Tour", "https://www.itftennis.com/en/tournament-calendar/mens-world-tennis-tour-calendar/", "Men’s ITF tournament calendar and event links."),
+        ("Official match scoring", "ProTennisLive", "https://www.protennislive.com/", "Tournament scoring and published draw documents where available."),
+        ("Challenger coverage", "ATP Challenger Tour", "https://www.atptour.com/en/atp-challenger-tour", "Challenger schedules, draws and results."),
+        ("Team competition", "Davis Cup", "https://www.daviscup.com/", "Official team nominations and match results."),
+    ),
+    "Cricket": (
+        ("Scorecards and squads", "ESPNcricinfo", "https://www.espncricinfo.com/", "Scorecards, player histories and tournament coverage."),
+        ("Live scorecards", "Cricbuzz", "https://www.cricbuzz.com/cricket-match/live-scores", "Live scorecards and match updates."),
+        ("T20 selection", "Indian Premier League", "https://www.iplt20.com/", "Official IPL fixtures, squads and results."),
+        ("Domestic and international", "ECB", "https://www.ecb.co.uk/", "England and domestic fixtures, squad updates and results."),
+        ("Australia and Big Bash", "Cricket Australia", "https://www.cricket.com.au/", "Australian fixtures, scorecards and squad updates."),
+    ),
+    "PGA Golf": (
+        ("Field strength", "Official World Golf Ranking", "https://www.owgr.com/", "World rankings and player ranking history."),
+        ("Majors and course coverage", "USGA", "https://www.usga.org/", "Official U.S. Open field, scoring and course information when published."),
+        ("Player development", "Korn Ferry Tour", "https://www.pgatour.com/korn-ferry-tour", "PGA TOUR feeder-tour results and recent form for graduates and call-ups."),
+        ("Cross-tour form", "DP World Tour Results", "https://www.europeantour.com/dpworld-tour/schedule/", "Official event schedules and results for players appearing on both tours."),
+        ("Tee-time weather", "National Weather Service", "https://www.weather.gov/", "US course-area forecasts for wind and weather timing."),
+    ),
+}
+
 def show_research_links(sport):
-    for category, label, url, description in RESEARCH_LINKS[sport]:
+    for category, label, url, description in (*RESEARCH_LINKS[sport], *ADDITIONAL_RESEARCH_LINKS[sport]):
         st.markdown(f'**{category}** · [{label}]({url})  \n{description}')
-    st.caption('Open the source for current status. These links use no odds credits and do not change the rankings.')
+    st.caption('Manual research links · Open a source for current information. The scan does not fetch these pages or use them to rank props.')
 
 
 @st.cache_data(ttl=86400, max_entries=128, show_spinner=False)
@@ -466,6 +539,33 @@ def nba_injury_status(reports, date, team_codes, player_id):
     return 'Availability unconfirmed', str(newest)
 
 
+def nba_matchup_availability(reports, logs, date, team_codes, player_team, player_id):
+    if reports is None:
+        return {}
+    matchup = reports.loc[reports['game_date'].eq(date)
+                          & reports['away_team_abbr'].eq(team_codes[0])
+                          & reports['home_team_abbr'].eq(team_codes[1])]
+    latest = matchup['report_datetime'].max()
+    if pd.isna(latest):
+        return {}
+    roster = (logs.sort_values('game_date').drop_duplicates('player_id', keep='last')
+              .set_index('player_id'))
+    availability = {'Teammates': [], 'Opponents': []}
+    for person_id, entries in matchup[matchup['report_datetime'].eq(latest)].groupby('person_id'):
+        if person_id == player_id or person_id not in roster.index:
+            continue
+        statuses = entries['current_status'].dropna().astype(str).str.strip().unique()
+        if len(statuses) != 1 or statuses[0].casefold() not in {'out', 'doubtful', 'questionable', 'probable', 'available'}:
+            continue
+        player = roster.loc[person_id]
+        team = player['team_abbreviation']
+        if team not in team_codes:
+            continue
+        group = 'Teammates' if team == player_team else 'Opponents'
+        availability[group].append(f"{player['player_name']} · {statuses[0]}")
+    return {f'{group} reported': '; '.join(entries) for group, entries in availability.items() if entries}
+
+
 def nba_name_key(value):
     import unicodedata
 
@@ -562,6 +662,8 @@ def nba_automatic_context(logs, row, game_date, injuries=None, role_history=None
     home = team == team_codes[1]
     opponent = team_codes[int(not home)]
     recent = on_current_team.tail(5)
+    low_minutes = float(recent['min'].min())
+    high_minutes = float(recent['min'].max())
     same_venue = on_current_team[on_current_team['home'].eq(home)]
     against = on_current_team[on_current_team['opponent'].eq(opponent)]
     latest_date = recent.iloc[-1]['game_date']
@@ -612,6 +714,10 @@ def nba_automatic_context(logs, row, game_date, injuries=None, role_history=None
     gap = None
     model_over = None
     line = float(row['line'])
+    minutes_sensitive = mean_minutes > 0 and (
+        minutes_scenario(projection, mean_minutes, line, low_minutes)[1]
+        != minutes_scenario(projection, mean_minutes, line, high_minutes)[1]
+    )
     if not status.startswith('Hold') and deviation > 0 and not line.is_integer():
         model_over = 100 * prob_model(projection, deviation, line, 'Over',
                                      'Normal (continuous approximation)')
@@ -626,11 +732,17 @@ def nba_automatic_context(logs, row, game_date, injuries=None, role_history=None
             lean = 'Recheck — PrizePicks line changed since first observed.'
         if lean.startswith('Model lean') and row.get('Lopsided game flag') == 'Elevated':
             lean = 'Recheck — large market spread could change minutes.'
+        if lean.startswith('Model lean') and minutes_sensitive:
+            lean = 'Recheck — sensitive to playing time.'
     return {
         'Auto status': status, 'Injury report status': injury, 'Report time (Eastern)': injury_timestamp,
+        'NBA player ID': int(player.iloc[-1]['player_id']),
+        'NBA away team': team_codes[0], 'NBA home team': team_codes[1],
         'Season average': round(float(player[stat].mean()), 2),
         'Last five average': round(float(recent[stat].mean()), 2),
         'Expected minutes': round(mean_minutes, 1),
+        'Recent low minutes': low_minutes, 'Recent high minutes': high_minutes,
+        'Minutes sensitivity': 'Recheck' if minutes_sensitive else None,
         'Home/away average': round(float(same_venue[stat].mean()), 2) if not same_venue.empty else None,
         'Head-to-head average': round(float(against[stat].mean()), 2) if not against.empty else None,
         'Prior meetings': len(against),
@@ -641,6 +753,8 @@ def nba_automatic_context(logs, row, game_date, injuries=None, role_history=None
         'Model signal': lean, 'Model More estimate (%)': model_over,
         'Venue split games': len(same_venue), 'Defense factor applied': defense_basis,
         'Last player game in feed': str(latest_date), **role, **usage,
+        **nba_matchup_availability(injuries, logs, game_date, team_codes, team,
+                                   player.iloc[-1]['player_id']),
     }
 
 
@@ -749,6 +863,23 @@ def selectable_prop_table(picks, key, columns=None):
     return next(iter(selection.selection.rows), None)
 
 
+def project_nba_matchup(logs, away, home):
+    totals = logs.groupby(['game_date', 'game_id', 'team_abbreviation'])['pts'].sum(min_count=1)
+    games = totals.unstack().dropna(how='all')
+    games = games.loc[games.notna().sum(axis=1).eq(2)]
+    histories = {}
+    for team in (away, home):
+        if team not in games:
+            return {}
+        played = games.loc[games[team].notna()]
+        histories[team] = list(zip(played[team], played.drop(columns=team).sum(axis=1)))
+    projection = score_projection(histories[away], histories[home])
+    if projection is None:
+        return {}
+    return dict(zip(('Projected away score', 'Projected home score',
+                     'Model home spread', 'Model game total'), projection))
+
+
 def automatic_nba_board(picks, board_scope):
     freshness = int(dt.datetime.now(dt.timezone.utc).timestamp()) // 900
     scope = sha256((repr(board_scope) + picks.to_json() + str(freshness)).encode()).hexdigest()[:16]
@@ -768,11 +899,17 @@ def automatic_nba_board(picks, board_scope):
                 except (requests.RequestException, ValueError, KeyError, ImportError, TypeError):
                     role_history = None
                 rows = []
+                game_models = {}
                 for _, row in picks.iterrows():
                     start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
                     date = today if pd.isna(start) else start.tz_convert('America/New_York').date()
-                    context = nba_automatic_context(logs[logs['game_date'] < date], row, date, injuries, role_history)
-                    rows.append({**row.to_dict(), **context})
+                    history = logs[logs['game_date'] < date]
+                    context = nba_automatic_context(history, row, date, injuries, role_history)
+                    away, home = context.get('NBA away team'), context.get('NBA home team')
+                    matchup = date, away, home
+                    if away and home and matchup not in game_models:
+                        game_models[matchup] = project_nba_matchup(history, away, home)
+                    rows.append({**row.to_dict(), **context, **game_models.get(matchup, {})})
             saved = (scope, pd.DataFrame(rows))
             st.session_state['auto_nba_board'] = saved
         except (requests.RequestException, ValueError, KeyError, TypeError):
@@ -793,6 +930,67 @@ NFL_TEAM_CODES = dict(zip(
     'ARI ATL BAL BUF CAR CHI CIN CLE DAL DEN DET GB HOU IND JAX KC LV LAC LA MIA MIN NE NO NYG '
     'NYJ PHI PIT SF SEA TB TEN WAS'.split(),
 ))
+
+# Match the schedule's venue, including when teams play at a neutral site.
+NFL_OUTDOOR_COORDINATES = {
+    'Lambeau Field': (44.5013, -88.0622),
+    'Soldier Field': (41.8623, -87.6167),
+    'Acrisure Stadium': (40.4468, -80.0158),
+    'Lincoln Financial Field': (39.9008, -75.1675),
+    'GEHA Field at Arrowhead Stadium': (39.0489, -94.4839),
+    'Arrowhead Stadium': (39.0489, -94.4839),
+    'MetLife Stadium': (40.8135, -74.0745),
+    'Gillette Stadium': (42.0909, -71.2643),
+    'Levi\'s Stadium': (37.4033, -121.9694),
+    'Lumen Field': (47.5952, -122.3316),
+}
+
+
+@st.cache_data(ttl=1800, max_entries=64, show_spinner=False)
+def nfl_weather(venue, roof, kickoff):
+    if roof in {'dome', 'closed'}:
+        return {'Weather review': 'Covered venue'}
+    coordinates = NFL_OUTDOOR_COORDINATES.get(venue)
+    if roof != 'outdoors' or coordinates is None:
+        return {'Weather review': 'Outdoor venue or roof status unverified'}
+    if pd.isna(kickoff):
+        return {'Weather review': 'Kickoff time unverified'}
+    now = dt.datetime.now(dt.timezone.utc)
+    if not now <= kickoff < now + dt.timedelta(days=7):
+        return {'Weather review': 'Kickoff outside forecast window'}
+    headers = {'User-Agent': 'Edge Lab (github.com/masonacarolus11-spec/prop-edge-lab)',
+               'Accept': 'application/geo+json'}
+    try:
+        with requests.Session() as session:
+            root = 'https://api.weather.gov'
+            response = session.get(f'{root}/points/{coordinates[0]},{coordinates[1]}',
+                                   headers=headers, timeout=(2, 4))
+            response.raise_for_status()
+            endpoint = urlsplit(response.json()['properties']['forecastHourly'])
+            if endpoint.scheme != 'https' or endpoint.netloc != 'api.weather.gov':
+                raise ValueError('Unexpected forecast endpoint')
+            response = session.get(root + endpoint.path, headers=headers, timeout=(2, 4))
+            response.raise_for_status()
+            periods = response.json()['properties']['periods']
+        relevant = [period for period in periods
+                    if pd.Timestamp(period['endTime']) > kickoff
+                    and pd.Timestamp(period['startTime']) < kickoff + dt.timedelta(hours=3)]
+        if not relevant:
+            return {'Weather review': 'No forecast covers kickoff'}
+        winds = [int(match.group(1)) for period in relevant
+                 if (match := re.fullmatch(r'(\d+) mph', period.get('windSpeed', '')))]
+        rain = [period.get('probabilityOfPrecipitation', {}).get('value') for period in relevant]
+        rain = [value for value in rain if isinstance(value, (int, float))]
+        if not winds and not rain:
+            return {'Weather review': 'Forecast missing usable wind and precipitation'}
+        review = 'Recheck · wind or precipitation risk' if (
+            max(winds, default=0) >= 20 or max(rain, default=0) >= 70
+        ) else 'Forecast checked'
+        return {'Weather review': review, 'Weather source': 'National Weather Service',
+                'Forecast peak wind (mph)': max(winds, default=None),
+                'Forecast peak precipitation chance (%)': max(rain, default=None)}
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
+        return {'Weather review': 'NWS forecast unavailable'}
 
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
@@ -915,16 +1113,22 @@ def nfl_automatic_context(stats, games, row, today, injuries=None, depth=None, n
     if len(upcoming) != 1:
         return {'Auto status': 'Could not verify a single upcoming NFL game'}
     game = upcoming.iloc[0]
+    kickoff = start
+    if pd.isna(kickoff) and pd.notna(game.get('gametime')):
+        kickoff = pd.to_datetime(f"{game['gameday']} {game['gametime']}", errors='coerce')
+        if pd.notna(kickoff) and kickoff.tzinfo is None:
+            kickoff = kickoff.tz_localize('America/New_York', ambiguous='NaT', nonexistent='NaT')
+    weather = nfl_weather(game.get('stadium'), str(game.get('roof')).strip().casefold(), kickoff)
     date = game['gameday']
     history = stats.loc[stats['gameday'].lt(date)]
     player = history.loc[history['name_key'].eq(nba_name_key(row['player'])) & history[stat].notna()]
     player = player.sort_values(['gameday', 'game_id'])
     if len(player) < 5 or player['player_id'].nunique() != 1:
-        return {'Auto status': 'Fewer than five verified player games or ambiguous player name'}
+        return {'Auto status': 'Fewer than five verified player games or ambiguous player name', **weather}
     team = player.iloc[-1]['team']
     own_team = player.loc[player['team'].eq(team)]
     if team not in codes or len(own_team) < 5:
-        return {'Auto status': 'Insufficient player history with the matchup team'}
+        return {'Auto status': 'Insufficient player history with the matchup team', **weather}
     home = team == codes[1]
     opponent = codes[0 if home else 1]
     recent = own_team.tail(5)
@@ -966,10 +1170,14 @@ def nfl_automatic_context(stats, games, row, today, injuries=None, depth=None, n
                 lean = 'Recheck — PrizePicks line changed since first observed.'
             elif row.get('Lopsided game flag') == 'Elevated':
                 lean = 'Recheck — large market spread could change late-game play calling.'
+            elif weather['Weather review'].startswith('Recheck'):
+                lean = 'Recheck — National Weather Service forecast flags weather risk.'
     return {
         'Auto status': ('Hold · check NFL injury or practice status' if hold else
                         'Pregame NFL model · starting lineup unconfirmed'),
-        **availability,
+        **availability, **weather,
+        'NFL player ID': str(player.iloc[-1]['player_id']),
+        'NFL away team': codes[0], 'NFL home team': codes[1],
         'Season average': round(season_mean, 2), 'Last five average': round(recent_mean, 2),
         'Season opportunities per game': round(float(player[opportunities].mean()), 2),
         'Recent opportunities per game': round(float(recent[opportunities].mean()), 2),
@@ -981,6 +1189,25 @@ def nfl_automatic_context(stats, games, row, today, injuries=None, depth=None, n
         'Model More estimate (%)': model_over, 'Model signal': lean,
         'Model–market Over gap (pp)': round(gap, 1) if gap is not None else None,
     }
+
+
+def project_nfl_matchup(games, date, away, home):
+    played = games.loc[
+        games['gameday'].lt(date) & games['home_score'].notna() & games['away_score'].notna()
+    ].sort_values(['gameday', 'game_id'])
+
+    def history(team):
+        matches = played.loc[played['home_team'].eq(team) | played['away_team'].eq(team)]
+        return [
+            (row.home_score, row.away_score) if row.home_team == team else (row.away_score, row.home_score)
+            for row in matches.itertuples(index=False)
+        ]
+
+    projection = score_projection(history(away), history(home))
+    if projection is None:
+        return {}
+    return dict(zip(('Projected away score', 'Projected home score',
+                     'Model home spread', 'Model game total'), projection))
 
 
 def automatic_nfl_board(picks, board_scope):
@@ -1001,9 +1228,17 @@ def automatic_nfl_board(picks, board_scope):
                 except (requests.RequestException, ValueError, KeyError, ImportError, TypeError):
                     availability_sources.append(None)
             injuries, depth = availability_sources
-            records = [{**row.to_dict(), **nfl_automatic_context(stats, games, row, today,
-                                                                injuries, depth)}
-                       for _, row in picks.iterrows()]
+            records = []
+            game_models = {}
+            for _, row in picks.iterrows():
+                context = nfl_automatic_context(stats, games, row, today, injuries, depth)
+                away, home = context.get('NFL away team'), context.get('NFL home team')
+                start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
+                date = today if pd.isna(start) else start.tz_convert('America/New_York').date()
+                matchup = date, away, home
+                if away and home and matchup not in game_models:
+                    game_models[matchup] = project_nfl_matchup(games, *matchup)
+                records.append({**row.to_dict(), **context, **game_models.get(matchup, {})})
     except (requests.RequestException, ValueError, KeyError, TypeError):
         st.warning('NFL game history is unavailable. Sportsbook comparisons are still shown.')
         return picks
@@ -1012,21 +1247,557 @@ def automatic_nfl_board(picks, board_scope):
     return board
 
 
+def minutes_scenario(projection, expected_minutes, line, playing_time):
+    estimate = projection * playing_time / expected_minutes
+    gap = estimate - line
+    side = 'Near line' if abs(gap) < 0.5 else 'More' if gap > 0 else 'Less'
+    return estimate, side
+
+
+def show_minutes_check(projection, expected_minutes, line, low, high, key):
+    if any(pd.isna(value) for value in (projection, expected_minutes, low, high)):
+        return
+    if expected_minutes <= 0 or projection <= 0:
+        return
+    st.markdown('#### Playing-time scenarios')
+    for column, label, minutes in zip(
+        st.columns(3), ('Recent low', 'Baseline minutes', 'Recent high'), (low, expected_minutes, high),
+    ):
+        estimate, side = minutes_scenario(projection, expected_minutes, line, minutes)
+        column.metric(label, f'{minutes:.1f} min')
+        column.caption(f'{estimate:.2f} projected · {side}')
+    if minutes_scenario(projection, expected_minutes, line, low)[1] != minutes_scenario(
+        projection, expected_minutes, line, high,
+    )[1]:
+        st.info('This prop changes side or moves near the line within the recent minutes range.')
+    minutes = st.slider('Try a playing-time scenario', 0.0, max(48.0, high, expected_minutes),
+                        float(expected_minutes), step=0.1, key=key)
+    estimate, side = minutes_scenario(projection, expected_minutes, line, minutes)
+    st.write(f'**{side}** at {minutes:.1f} minutes · **{estimate:.2f}** projected against a **{line:g}** line.')
+    crossing = line * expected_minutes / projection
+    st.caption(f'Projection reaches the line at {crossing:.1f} minutes. The scenario holds production per minute steady.')
+
+
+def show_scanned_nba_context(row, key):
+    show_minutes_check(
+        row.get('Projected stat'), row.get('Expected minutes'), float(row['line']),
+        row.get('Recent low minutes'), row.get('Recent high minutes'), key,
+    )
+    st.markdown('#### Matchup availability')
+    st.caption(f"Injury report: {row.get('Injury report status', 'unavailable')}")
+    timestamp = row.get('Report time (Eastern)')
+    if pd.notna(timestamp):
+        st.caption(f'Report time: {timestamp} ET')
+    for column, group in zip(st.columns(2), ('Teammates', 'Opponents')):
+        with column:
+            st.markdown(f'**{group}**')
+            entries = row.get(f'{group} reported')
+            if pd.isna(entries):
+                st.caption('No matching status found. Availability is unconfirmed.')
+            else:
+                for entry in entries.split('; '):
+                    st.write(entry)
+    context = {
+        'player_points': 'Check shot volume and defensive assignments.',
+        'player_rebounds': 'Check frontcourt minutes, rebound competition and opponent shot mix.',
+        'player_assists': 'Check ball-handling and who is available to finish plays.',
+    }
+    st.caption(context.get(row['market'], 'Check how the rotation and matchup may change.'))
+    st.caption('Reported absences are shown for review. They do not automatically change the projection.')
+
+
+def pregame_recheck(board, sport):
+    observed = pd.Timestamp.now(tz='UTC')
+    keys = {}
+    observations = []
+    confirmed_statuses = {'out', 'doubtful', 'questionable', 'probable', 'available',
+                          'ir', 'injured reserve'}
+    for index, row in enumerate(board.to_dict('records')):
+        kickoff = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
+        if pd.isna(kickoff) or kickoff <= observed or pd.isna(row.get('event_id')):
+            continue
+        identity = str(row['event_id']), nba_name_key(row['player']), row['market']
+        key = json.dumps(identity if sport == 'NBA' else (sport, *identity))
+        keys[index] = key
+        evidence = {}
+        updated = pd.to_datetime(row.get('prizepicks_updated_utc'), utc=True, errors='coerce')
+        if pd.notna(updated) and updated <= observed and pd.notna(row.get('line')):
+            evidence['PrizePicks line'] = updated.isoformat(), f"{row['line']:g}"
+        report = pd.to_datetime(row.get('Report time (Eastern)' if sport == 'NBA'
+                                        else 'NFL injury report time (UTC)'), errors='coerce')
+        if pd.notna(report):
+            if report.tzinfo is None:
+                report = report.tz_localize('America/New_York', ambiguous='NaT', nonexistent='NaT')
+            if pd.notna(report) and report <= observed:
+                stamp = report.tz_convert('UTC').isoformat()
+                player_status = str(row.get('Injury report status')).strip()
+                if player_status.casefold() in confirmed_statuses:
+                    evidence['Player availability'] = stamp, player_status
+                for group in ('Teammates', 'Opponents'):
+                    entries = row.get(f'{group} reported')
+                    if isinstance(entries, str):
+                        for entry in entries.split('; '):
+                            name, separator, status = entry.partition(' · ')
+                            if separator:
+                                evidence[f'{group}: {name}'] = stamp, status
+                evidence['_report'] = stamp, 'Report checked'
+        observations.append((key, row['player'], row['event'], row['market'], evidence))
+    if not observations:
+        return board
+    changes = observe_pregame_changes(DB, observations)
+    reviewed = board.copy()
+    reviewed['Pregame recheck'] = [
+        '\n'.join(f'{field}: {before} → {after}' for field, before, after in changes.get(keys.get(index), []))
+        for index in range(len(board))
+    ]
+    if 'Model signal' in reviewed:
+        flagged = reviewed['Pregame recheck'].ne('')
+        active_lean = reviewed['Model signal'].isin(['Model lean: More', 'Model lean: Less'])
+        reviewed.loc[flagged & active_lean, 'Model signal'] = 'Recheck — line or availability changed.'
+    return reviewed
+
+
+def track_model_scan(board, sport):
+    observed = pd.Timestamp.now(tz='UTC')
+    labels = {'Model lean: More': 'More', 'Model lean: Less': 'Less'}
+    snapshots = []
+    for row in board.to_dict('records'):
+        if row.get('Model signal') not in labels:
+            continue
+        if row.get('Pregame recheck'):
+            continue
+        kickoff = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
+        required = ('event_id', f'{sport} player ID', f'{sport} away team', f'{sport} home team')
+        if pd.isna(kickoff) or kickoff <= observed or any(pd.isna(row.get(key)) for key in required):
+            continue
+        if row.get('market') not in (NBA_STAT_COLUMNS if sport == 'NBA' else NFL_STATS):
+            continue
+        player_id = int(row[f'{sport} player ID']) if sport == 'NBA' else str(row[f'{sport} player ID'])
+        snapshots.append((
+            row['event_id'], player_id, row['market'], sport, row['player'],
+            row['event'], kickoff.isoformat(), row[f'{sport} away team'], row[f'{sport} home team'],
+            observed.isoformat(), float(row['line']), labels[row['Model signal']],
+            row.get('Projected stat'), row.get('Injury report status'),
+            row.get('Minutes sensitivity'), row.get('comparison_books'), row.get('Weather review'),
+        ))
+    if snapshots:
+        save_report_picks(DB, snapshots)
+        st.caption(f'{len(snapshots)} eligible pregame leans on this board. Pick Report Card keeps the first saved line for each player, game and stat.')
+
+
+def fetch_nba_box(game_id):
+    response = requests.get(
+        f'https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json',
+        timeout=(3, 6),
+    )
+    response.raise_for_status()
+    return response.json()['game']
+
+
+load_nba_final_box = st.cache_data(ttl=900, max_entries=128, show_spinner=False)(fetch_nba_box)
+
+
+@st.cache_data(ttl=45, max_entries=1, show_spinner=False)
+def load_nba_live_scoreboard():
+    url = 'https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json'
+    response = requests.get(url, timeout=(3, 6))
+    response.raise_for_status()
+    return response.json()['scoreboard']['games']
+
+
+@st.cache_data(ttl=45, max_entries=48, show_spinner=False)
+def load_nba_live_box(game_id):
+    return fetch_nba_box(game_id)
+
+
+def refresh_tracked_event(key, picks, phase):
+    first = picks.iloc[0]
+    kickoff = pd.Timestamp(first['kickoff'])
+    event_id = first['event_id']
+    sport = first['sport']
+    markets = sorted(picks['market'].unique())
+    data, remaining = odds_client(key).get(
+        f'sports/{SPORTS[sport]}/events/{event_id}/odds',
+        regions='us_dfs', markets=','.join(markets), oddsFormat='american',
+    )
+    checked = pd.Timestamp.now(tz='UTC')
+    if checked >= kickoff:
+        return 0, remaining
+    away, _, home = first['event'].partition(' at ')
+    quotes = compare_live_event(data, {
+        'id': event_id, 'commence_time': kickoff.isoformat(), 'away_team': away, 'home_team': home,
+    }, markets)
+    if quotes.empty:
+        quotes = pd.DataFrame(columns=['name_key', 'market'])
+    else:
+        quotes['name_key'] = quotes['player'].map(nba_name_key)
+    season = kickoff.tz_convert('America/New_York').date()
+    football = None
+    try:
+        injuries = load_nba_injury_report(season.year + int(season.month >= 9)) if sport == 'NBA' else None
+        if sport == 'NFL':
+            season_year = season.year - int(season.month < 7)
+            stats, games = load_nfl_history(season_year)
+            injuries = load_nfl_availability(season_year, 'injuries')
+            game = games.loc[games['gameday'].eq(season) & games['away_team'].eq(first['away'])
+                             & games['home_team'].eq(first['home'])]
+            if len(game) == 1:
+                football = stats, game.iloc[0]['week']
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        injuries = None
+    if injuries is not None and sport == 'NBA':
+        try:
+            logs = load_nba_game_log(season.year + int(season.month >= 9))
+            logs = logs.loc[logs['game_date'].lt(season)]
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            logs = None
+    observed, closing = [], []
+    for pick in picks.to_dict('records'):
+        matches = quotes.loc[quotes['name_key'].eq(nba_name_key(pick['player']))
+                             & quotes['market'].eq(pick['market'])]
+        row = matches.iloc[0].to_dict() if len(matches) == 1 else dict(pick)
+        row.update(event_id=event_id, starts_utc=kickoff.isoformat())
+        if injuries is not None and sport == 'NFL' and football:
+            stats, week = football
+            prior = stats.loc[stats['gameday'].lt(season) & stats['player_id'].eq(pick['player_id'])]
+            if not prior.empty:
+                team = prior.sort_values('gameday').iloc[-1]['team']
+                if team in (pick['away'], pick['home']):
+                    row.update(nfl_availability(injuries, None, team, pick['player_id'], week, checked))
+        if injuries is not None and sport == 'NBA':
+            codes = pick['away'], pick['home']
+            status, timestamp = nba_injury_status(injuries, season, codes, pick['player_id'])
+            row.update({'Injury report status': status, 'Report time (Eastern)': timestamp})
+            if logs is not None:
+                player = logs.loc[logs['player_id'].eq(pick['player_id'])].sort_values('game_date')
+                if not player.empty and player.iloc[-1]['team_abbreviation'] in codes:
+                    row.update(nba_matchup_availability(
+                        injuries, logs, season, codes, player.iloc[-1]['team_abbreviation'], pick['player_id'],
+                    ))
+        observed.append(row)
+        updated = pd.to_datetime(row.get('prizepicks_updated_utc'), utc=True, errors='coerce')
+        if (phase == 'close' and len(matches) == 1 and pd.notna(updated)
+                and updated <= checked and 0 < (kickoff - checked).total_seconds() <= 600):
+            closing.append((event_id, pick['player_id'], pick['market'], float(row['line']),
+                            checked.isoformat(), updated.isoformat()))
+    pregame_recheck(pd.DataFrame(observed), sport)
+    save_closing_quotes(DB, closing)
+    return len(closing), remaining
+
+
+@st.fragment(run_every=60)
+def nba_pick_watch(picks, key):
+    st.caption('Checks tracked NBA and NFL picks while this session is open. Pregame checks are opt-in and use at most six Odds API credits per session.')
+    pregame = st.checkbox('Auto-check around 90 minutes and again in the last 10 minutes', disabled=not key)
+    live = st.checkbox('Show live game updates', value=False)
+    alerts = st.checkbox('Show in-app change alerts', value=False)
+    now = pd.Timestamp.now(tz='UTC')
+    state = st.session_state.setdefault('nba_watch', {'attempted': set(), 'credits': 0, 'early_credits': 0, 'messages': [],
+                                                     'live_states': {}, 'alert_seen': set()})
+    if pregame and key:
+        for (event_id, kickoff), group in picks.groupby(['event_id', 'kickoff'], sort=False):
+            phase = pregame_window((pd.Timestamp(kickoff) - now).total_seconds() / 60)
+            token = event_id, phase
+            cost = group['market'].nunique()
+            if phase is None or token in state['attempted'] or state['credits'] + cost > 6:
+                continue
+            if phase == 'recheck' and state['early_credits'] + cost > 3:
+                continue
+            state['attempted'].add(token)
+            state['credits'] += cost
+            if phase == 'recheck':
+                state['early_credits'] += cost
+            try:
+                count, remaining = refresh_tracked_event(key, group, phase)
+                state['messages'].append(f"{group.iloc[0]['event']}: {phase} checked. {count} closing quotes recorded.")
+                if remaining == '0':
+                    state['credits'] = 6
+                    break
+            except (ProviderError, requests.RequestException, KeyError, ValueError, TypeError):
+                state['messages'].append(f"{group.iloc[0]['event']}: {phase} source unavailable.")
+                break
+    if state['messages']:
+        st.caption(state['messages'][-1])
+    with sqlite3.connect(DB) as conn:
+        closing = pd.read_sql_query(
+            """SELECT p.player, p.market, p.side, p.line AS tracked_line, q.line AS late_line,
+                      q.checked, q.updated
+               FROM closing_quotes q JOIN report_card p USING(event_id, player_id, market)
+               ORDER BY q.checked DESC""", conn,
+        )
+    if not closing.empty:
+        closing['Line advantage'] = [
+            closing_line_gain(row.side, row.tracked_line, row.late_line)
+            for row in closing.itertuples(index=False)
+        ]
+        with st.expander('Late PrizePicks lines'):
+            st.dataframe(closing, hide_index=True)
+            st.caption('Positive means the tracked number was more favorable. This is a verified quote observed during the final 10 minutes, which may differ from the actual closing line.')
+    if live:
+        nba = picks.loc[picks['sport'].eq('NBA')]
+        if not nba.empty:
+            show_live_nba_picks(nba, state, alerts)
+        nfl = picks.loc[picks['sport'].eq('NFL')]
+        if not nfl.empty:
+            show_live_nfl_scores(nfl, state, alerts)
+    if alerts:
+        with sqlite3.connect(DB) as conn:
+            changes = conn.execute(
+                'SELECT id, player, field, previous, current FROM pregame_changes ORDER BY id DESC LIMIT 10'
+            ).fetchall()
+        for ident, player, field, before, after in reversed(changes):
+            if ident not in state['alert_seen']:
+                st.toast(f'{player} · {field}: {before} → {after}')
+                state['alert_seen'].add(ident)
+
+
+@st.cache_data(ttl=45, max_entries=2, show_spinner=False)
+def load_nfl_live_scoreboard():
+    response = requests.get(
+        'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard', timeout=(3, 6),
+    )
+    response.raise_for_status()
+    return response.json()['events']
+
+
+def show_live_nfl_scores(picks, state, alerts):
+    try:
+        events = load_nfl_live_scoreboard()
+    except (requests.RequestException, KeyError, ValueError, TypeError):
+        st.info('NFL scoreboard is unavailable.')
+        return
+    aliases = {'LAR': 'LA', 'WSH': 'WAS', 'JAC': 'JAX'}
+    rows = []
+    for event in events:
+        start = pd.to_datetime(event.get('date'), utc=True, errors='coerce')
+        competitions = event.get('competitions', [])
+        if pd.isna(start) or len(competitions) != 1:
+            continue
+        competition = competitions[0]
+        teams = {team.get('homeAway'): team for team in competition.get('competitors', [])}
+        if not {'away', 'home'}.issubset(teams):
+            continue
+        codes = [teams[side].get('team', {}).get('abbreviation') for side in ('away', 'home')]
+        away, home = (aliases.get(team, team) for team in codes)
+        kickoff = pd.to_datetime(picks['kickoff'], utc=True, errors='coerce')
+        matches = picks.loc[picks['away'].eq(away) & picks['home'].eq(home) & kickoff.eq(start)]
+        status = competition.get('status', {})
+        phase = status.get('type', {})
+        if matches.empty or phase.get('state') not in ('in', 'post'):
+            continue
+        label = f"{away} {teams['away'].get('score', '—')} · {home} {teams['home'].get('score', '—')}"
+        complete = phase.get('completed') is True
+        key = 'NFL game', str(event.get('id'))
+        if alerts and complete and state['live_states'].get(key) != 'Final':
+            st.toast(f'{label} · Final')
+        state['live_states'][key] = 'Final' if complete else 'In play'
+        rows.append({'NFL game': matches.iloc[0]['event'], 'Score': label,
+                     'Status': phase.get('shortDetail'), 'Clock': status.get('displayClock')})
+    if rows:
+        st.dataframe(rows, hide_index=True)
+        st.caption('NFL scoreboard via ESPN. Player yardage is graded when the postgame data arrives.')
+    else:
+        st.caption('No tracked NFL game is verified on the current live scoreboard.')
+
+
+def show_live_nba_picks(picks, state, alerts):
+    try:
+        games = load_nba_live_scoreboard()
+    except (requests.RequestException, KeyError, ValueError, TypeError):
+        st.info('NBA live scoreboard is unavailable.')
+        return
+    rows = []
+    grades = []
+    for (kickoff, away, home), group in picks.groupby(['kickoff', 'away', 'home'], sort=False):
+        date = pd.Timestamp(kickoff).tz_convert('America/New_York').date()
+        matches = []
+        for game in games:
+            if (game.get('awayTeam', {}).get('teamTricode'), game.get('homeTeam', {}).get('teamTricode')) != (away, home):
+                continue
+            tip = pd.to_datetime(game.get('gameTimeUTC'), utc=True, errors='coerce')
+            if pd.notna(tip) and tip.tz_convert('America/New_York').date() == date:
+                matches.append(game)
+        if len(matches) != 1 or matches[0].get('gameStatus') not in (2, 3):
+            continue
+        try:
+            box = load_nba_live_box(matches[0]['gameId'])
+            teams = box['awayTeam'], box['homeTeam']
+            status = box['gameStatus']
+            players = {player['personId']: player for team in teams for player in team['players']}
+        except (requests.RequestException, KeyError, ValueError, TypeError):
+            continue
+        for pick in group.to_dict('records'):
+            player = players.get(pick['player_id'], {})
+            value = player.get('statistics', {}).get(NBA_BOX_STATS[pick['market']])
+            if status == 3:
+                graded = grade_nba_pick(box, pick)
+                result = graded[0] if graded else 'Unverified'
+                if graded and pick['result'] == 'Pending':
+                    grades.append((*graded, pick['event_id'], pick['player_id'], pick['market']))
+            else:
+                result = grade_score(status, pick['side'], value, pick['line']) if isinstance(value, (int, float)) else 'Awaiting stat'
+            identity = pick['event_id'], pick['player_id'], pick['market']
+            previous = state['live_states'].get(identity)
+            if alerts and previous != result and (previous or result in ('Hit', 'Miss', 'Push', 'Void')):
+                st.toast(f"{pick['player']} · {pick['market']}: {result}")
+            state['live_states'][identity] = result
+            rows.append({
+                'Player': pick['player'], 'Stat': pick['market'], 'Line': pick['line'],
+                'Side': pick['side'], 'Current stat': value, 'Status': result,
+                'Started': 'Yes' if player.get('starter') in ('1', 1) else '—',
+                'Score': f"{away} {teams[0]['score']} · {home} {teams[1]['score']}",
+                'Game status': box.get('gameStatusText'), 'Game clock': box.get('gameClock'),
+            })
+    if rows:
+        st.dataframe(rows, hide_index=True)
+    else:
+        st.caption('No tracked games have a verified live or final box score on today’s NBA scoreboard.')
+    if grades:
+        store_report_grades(grades)
+
+
+def store_report_grades(results):
+    with sqlite3.connect(DB) as conn:
+        cursor = conn.executemany(
+            """UPDATE report_card SET result=?, actual=?
+               WHERE event_id=? AND player_id=? AND market=? AND result='Pending'""", results,
+        )
+        return cursor.rowcount
+
+
+def refresh_report_grades(picks):
+    now = pd.Timestamp.now(tz='UTC')
+    pending = picks.loc[picks['result'].eq('Pending')].copy()
+    dates = pd.to_datetime(pending['kickoff'], utc=True).dt.tz_convert('America/New_York')
+    pending = pending.loc[dates.le(now - pd.Timedelta(hours=4))]
+    matchups = pending.groupby(['sport', 'event_id', 'kickoff', 'away', 'home'], sort=False)
+    results = []
+    season_logs = {}
+    football_logs = {}
+    for (sport, _, kickoff, away, home), group in list(matchups)[:12]:
+        date = pd.Timestamp(kickoff).tz_convert('America/New_York').date()
+        season = date.year + int(date.month >= 9)
+        try:
+            if sport == 'NFL':
+                football_season = date.year - int(date.month < 7)
+                if football_season not in football_logs:
+                    football_logs[football_season] = load_nfl_history(football_season)
+                stats, games = football_logs[football_season]
+                matching = games.loc[games['gameday'].eq(date) & games['home_team'].eq(home)
+                                     & games['away_team'].eq(away) & games['home_score'].notna()
+                                     & games['away_score'].notna()]
+                if len(matching) == 1:
+                    game = stats.loc[stats['game_id'].eq(matching.iloc[0]['game_id'])]
+                    for pick in group.to_dict('records'):
+                        player = game.loc[game['player_id'].eq(pick['player_id'])]
+                        if len(player) != 1:
+                            continue
+                        stat = NFL_STATS[pick['market']][0]
+                        actual = pd.to_numeric(player.iloc[0][stat], errors='coerce')
+                        if pd.notna(actual) and np.isfinite(actual):
+                            result = grade_score(3, pick['side'], actual, pick['line'])
+                            results.append((result, float(actual), pick['event_id'], pick['player_id'], pick['market']))
+                continue
+            if season not in season_logs:
+                season_logs[season] = load_nba_game_log(season)
+            logs = season_logs[season]
+            ids = logs.loc[
+                logs['game_date'].eq(date) & logs['team_abbreviation'].eq(home)
+                & logs['opponent'].eq(away) & logs['home'], 'game_id',
+            ].unique()
+            if len(ids) != 1:
+                continue
+            game = load_nba_final_box(ids[0])
+            for pick in group.to_dict('records'):
+                outcome = grade_nba_pick(game, pick)
+                if outcome is not None:
+                    results.append((*outcome, pick['event_id'], pick['player_id'], pick['market']))
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            continue
+    return store_report_grades(results)
+
+
+def show_report_card(key):
+    st.subheader('Pick Report Card')
+    st.caption('Tracks NBA points, rebounds and assists, plus NFL passing, rushing and receiving yards.')
+    with sqlite3.connect(DB) as conn:
+        picks = pd.read_sql_query('SELECT * FROM report_card ORDER BY kickoff, observed', conn)
+        changes = pd.read_sql_query(
+            'SELECT observed, player, event, market, field, previous, current '
+            'FROM pregame_changes ORDER BY observed DESC, id DESC', conn,
+        )
+    with st.expander('Pregame change history', expanded=not changes.empty):
+        if changes.empty:
+            st.caption('Compare the same upcoming PrizePicks prop again after a line or injury report updates.')
+        else:
+            st.dataframe(changes, hide_index=True)
+    if picks.empty:
+        st.info('No tracked picks yet. Run an NBA or NFL Best picks comparison before kickoff to record eligible More and Less leans.')
+        return
+    nba_pick_watch(picks, key)
+    if st.button('Check final box scores'):
+        with st.spinner('Checking NBA and NFL results…'):
+            count = refresh_report_grades(picks)
+        with sqlite3.connect(DB) as conn:
+            picks = pd.read_sql_query('SELECT * FROM report_card ORDER BY kickoff, observed', conn)
+        st.info(f'{count} picks graded. Unverified results stay pending.')
+    counts = picks['result'].value_counts()
+    decisions = counts.get('Hit', 0) + counts.get('Miss', 0)
+    columns = st.columns(4)
+    columns[0].metric('Tracked', len(picks))
+    columns[1].metric('Hits / misses', f"{counts.get('Hit', 0)} / {counts.get('Miss', 0)}")
+    columns[2].metric('Hit rate', f"{counts.get('Hit', 0) / decisions:.1%}" if decisions else '—')
+    columns[3].metric('Pending', counts.get('Pending', 0))
+    st.caption(f"Pushes: {counts.get('Push', 0)} · Voids: {counts.get('Void', 0)}. Hit rate uses hits and misses only.")
+    market = st.selectbox('Filter by stat', ['All stats', *NBA_STAT_COLUMNS, *NFL_STATS])
+    shown = picks if market == 'All stats' else picks.loc[picks['market'].eq(market)]
+    graded = shown.loc[shown['result'].isin(['Hit', 'Miss'])]
+    if not graded.empty:
+        breakdown = graded.assign(
+            Hit=graded['result'].eq('Hit'),
+            Minutes=graded['minutes'].fillna('Typical range'),
+        ).groupby(['market', 'Minutes'])['Hit'].agg(Decisions='size', Hits='sum').reset_index()
+        breakdown['Hit rate (%)'] = (100 * breakdown['Hits'] / breakdown['Decisions']).round(1)
+        st.dataframe(breakdown, hide_index=True)
+    st.dataframe(shown[['sport', 'player', 'event', 'market', 'line', 'side', 'projection', 'actual',
+                        'result', 'observed', 'injury', 'minutes', 'books']], hide_index=True)
+    st.download_button('Download report card', picks.to_csv(index=False), 'pick-report-card.csv', mime='text/csv')
+
+
 def show_best_picks_board(picks, sport, board_scope):
     adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
+    full_board = pregame_recheck(full_board, sport)
+    if sport in adapters:
+        track_model_scan(full_board, sport)
     columns = [
         'player', 'market', 'line', 'Model signal', 'Projected stat',
         'side', 'market_estimate_pct', 'comparison_books', 'Auto status', 'Injury report status',
-        'status', 'event',
+        'Pregame recheck', 'Minutes sensitivity', 'Weather review', 'status', 'event',
     ]
     visible = [column for column in columns if column in full_board]
+    game_columns = ['event', 'Projected away score', 'Projected home score',
+                    'Model home spread', 'Model game total', 'Market home spread', 'Market game total']
+    if 'Model game total' in full_board:
+        with st.expander(f'{sport} game projections'):
+            st.dataframe(
+                full_board.loc[full_board['Model game total'].notna(),
+                               [col for col in game_columns if col in full_board]].drop_duplicates('event'),
+                hide_index=True,
+            )
+            st.caption('Baseline blends each team’s season and last-five scoring and opponent points allowed. Negative home spread favors the home team.')
     table_key = sha256((repr(board_scope) + picks.to_json()).encode()).hexdigest()[:18]
     selected = selectable_prop_table(full_board, f'best_picks:{table_key}', visible)
     if selected is not None and selected < len(full_board):
         row = full_board.iloc[selected]
         st.subheader('Selected prop evaluation')
         show_pick_evaluation(row)
+        if row.get('Pregame recheck'):
+            st.warning('Pregame recheck · ' + row['Pregame recheck'].replace('\n', ' · '))
+            st.caption('Review the changed line or availability before using the earlier evaluation.')
+        if sport == 'NBA':
+            st.caption('Starting-lineup confirmation is unavailable from the connected NBA sources.')
+            show_scanned_nba_context(row, f'board_minutes:{table_key}:{selected}')
         with st.expander('Full stats and market details'):
             details = row.drop(labels=['event_id'], errors='ignore').dropna()
             st.dataframe(details.astype(str).rename('Value'), use_container_width=True)
@@ -1036,6 +1807,10 @@ def show_best_picks_board(picks, sport, board_scope):
         st.caption('NBA projections use game logs and injury reports via SportsDataverse. Roles and usage are estimates. Defense rank 1 allows the least. No extra odds credits are used.')
     if sport == 'NFL':
         st.caption('NFL research checks game logs, weekly injury and practice reports, and recent depth charts via nflverse. A missing report leaves availability unconfirmed. Depth chart rank does not confirm the starting lineup. No extra odds credits are used.')
+        weather_sources = int(full_board.get('Weather source', pd.Series(dtype=str)).notna().sum())
+        st.caption(f'National Weather Service forecast used for review on {weather_sources} of {len(full_board)} props. Coverage requires a verified mapped outdoor venue and a kickoff in the forecast window.')
+    if sport not in adapters:
+        st.caption(f'{sport} has no automatic player-stat research in this view. Open Research sources to review the listed references.')
     show_board_research(full_board, sport, board_scope, selected)
 
 
@@ -1152,6 +1927,7 @@ def game_market_context(data, event):
 
 def init_db():
     with sqlite3.connect(DB) as c:
+        init_report_card(c)
         c.execute(
             'CREATE TABLE IF NOT EXISTS prizepicks_first_lines '
             '(sport TEXT, event_id TEXT, player TEXT, market TEXT, line REAL, observed TEXT, '
@@ -1460,7 +2236,7 @@ with st.sidebar:
     st.info('Streamlit Community Cloud local SQLite storage is ephemeral. Export CSV regularly. For persistent multi-device history, connect a hosted database later.')
     st.markdown('[Get an API key](https://the-odds-api.com/) · [Deploy Streamlit](https://share.streamlit.io/)')
 
-best,tab1,tab2,tab3,tab4,research=st.tabs(['Best picks', '🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup','Research sources'])
+best,tab1,tab2,tab3,tab4,research,report_card=st.tabs(['Best picks', '🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup','Research sources','Pick Report Card'])
 key_id = sha256(api_key.encode()).hexdigest()
 with best:
     st.subheader('PrizePicks board by sport')
@@ -1494,7 +2270,7 @@ with best:
         board_ids.append(sha256(upload.getvalue()).hexdigest())
 
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS)
-    with st.expander(f'{pick_sport} stats and availability'):
+    with st.expander(f'{pick_sport} research sources'):
         show_research_links(pick_sport)
     if pick_sport in ('NFL', 'CFB'):
         show_football_weather()
@@ -1533,7 +2309,7 @@ with best:
             if compare:
                 environment = st.checkbox('Include game spread and total',
                                           help='Uses extra credits and screens large spreads for blowout risk.')
-            st.caption('Line changes use the first PrizePicks line saved by SharpLine.')
+            st.caption('Line changes use the first PrizePicks line saved by Edge Lab.')
         regions = (f'{pick_region},us_dfs' if compare else 'us_dfs') if live_board else pick_region
         credits = event_limit * (len(scan_markets) + 2 * int(environment)) * len(regions.split(','))
         st.caption(f'Maximum cost: {credits} provider credits. Identical requests can reuse cached odds for five minutes.')
@@ -1692,6 +2468,8 @@ with tab2:
             else:
                 add_pick({'sport':es,'event':event,'player':player,'market':market,'line':line,'side':side,'model_prob':p,'market_prob':mp,'edge':edge,'platform':platform,'payout_multiplier':payout,'notes':notes})
                 st.success('Paper prediction saved')
+with report_card:
+    show_report_card(api_key)
 with tab3:
     st.subheader('Results and validation')
     with sqlite3.connect(DB) as conn: picks=pd.read_sql_query('SELECT * FROM picks ORDER BY id DESC',conn)
@@ -1733,6 +2511,19 @@ with tab4:
 
 
 with research:
+    st.subheader('Best picks feature coverage')
+    st.dataframe([
+        {
+            'Sport': sport,
+            'Line recheck': 'On repeat feed scan' if sport in PICK_MARKETS else 'Feed pending',
+            'Timed checks and late quotes': 'Tracked picks, session open' if sport in ('NBA', 'NFL') else 'Pending',
+            'Live view': ('Score, clock and player stats' if sport == 'NBA' else
+                          'Score and clock' if sport == 'NFL' else 'Pending'),
+            'Score, spread and total projections': 'Game-history baseline' if sport in ('NBA', 'NFL') else 'Pending',
+            'Report Card grading': 'Supported player stats' if sport in ('NBA', 'NFL') else 'Pending',
+        }
+        for sport in ALL_SPORTS
+    ], hide_index=True)
     st.subheader('Research sources and provider coverage')
     st.caption('All nine sports support manual evaluation. Player-stat adapters are pending.')
     if st.button('Check active The Odds API coverage', disabled=not api_key):
