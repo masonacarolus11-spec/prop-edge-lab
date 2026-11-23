@@ -412,11 +412,13 @@ def show_cs2_review(sport):
 
 
 def show_nba_review(sport):
-    if sport != 'NBA' or st.query_params.get('nba_review') != '2026-11-23':
+    review = st.query_params.get('nba_review')
+    if sport != 'NBA' or review not in ('2026-11-23', '2026-11-23-batch2'):
         return
-    payload = json.loads(Path(__file__).with_name('nba-review-2026-11-23.json').read_text(encoding='utf-8'))
+    payload = json.loads(Path(__file__).with_name(f'nba-review-{review}.json').read_text(encoding='utf-8'))
     rows = payload['rows']
-    st.subheader('40 NBA prop evaluations · November 23')
+    title = '40 more NBA prop evaluations' if review.endswith('-batch2') else '40 NBA prop evaluations'
+    st.subheader(f'{title} · November 23')
     counts = Counter(row['lean'] for row in rows)
     st.caption(f"{counts['More']} More leans · {counts['Less']} Less leans · {counts['Pass']} passes")
     st.caption('Select a table row to see the evidence and the reason for its result.')
@@ -426,7 +428,7 @@ def show_nba_review(sport):
         for row in rows
     ])
     table = st.dataframe(summary, hide_index=True, height=410, on_select='rerun',
-                         selection_mode='single-row', key='nba_review_20261123')
+                         selection_mode='single-row', key=f'nba_review:{review}')
     chosen = table.selection.rows
     if chosen:
         index = chosen[0]
@@ -436,6 +438,8 @@ def show_nba_review(sport):
     row = rows[index]
     st.markdown(f"### {row['player']} · {row['stat']}")
     st.caption(row['match'])
+    if row.get('line_source'):
+        st.caption(f"Line source: {row['line_source']}.")
     metrics = st.columns(4)
     for column, label, value in zip(
         metrics, ('Line', 'Season average', 'Last five average', 'Projection'),
@@ -460,7 +464,7 @@ def show_nba_review(sport):
     st.dataframe(games.rename(columns={'date': 'Game date', 'opp': 'Opponent', 'mins': 'Minutes',
                                       'value': row['stat']}), hide_index=True)
     show_minutes_check(row['projection'], games['mins'].mean(), row['line'],
-                       games['mins'].min(), games['mins'].max(), f"review_minutes:{index}")
+                       games['mins'].min(), games['mins'].max(), f"review_minutes:{review}:{index}")
     if row['stat'] == 'Rebounds':
         snapshot = json.loads(
             Path(__file__).with_name('nba-rebound-misses-2026-11-23.json').read_text(encoding='utf-8')
