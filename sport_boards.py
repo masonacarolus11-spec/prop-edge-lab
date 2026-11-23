@@ -111,7 +111,8 @@ def load_sport_board(sport, day, end, panda_key=''):
         games = {}
         for phase in ('running', 'upcoming', 'past'):
             for event in fetch_json(f'https://api.pandascore.co/csgo/matches/{phase}',
-                                    {'per_page': 20}, {'Authorization': f'Bearer {panda_key}'}):
+                                    {'per_page': 20, 'filter[videogame_title]': 'cs-2'},
+                                    {'Authorization': f'Bearer {panda_key}'}):
                 names = {item['opponent']['id']: item['opponent']['name']
                          for item in event.get('opponents', []) if item.get('opponent')}
                 scores = [f"{names[item['team_id']]} {item['score']}" for item in event.get('results', [])
@@ -120,6 +121,8 @@ def load_sport_board(sport, day, end, panda_key=''):
                     'Event': event.get('name'), 'Competition': (event.get('league') or {}).get('name'),
                     'Start (UTC)': event.get('begin_at'), 'Status': event.get('status'),
                     'Score': ' · '.join(scores) if phase != 'upcoming' and scores else None,
+                    '_match_id': event['id'], '_teams': names,
+                    '_map_limit': event.get('number_of_games'),
                 }
         return list(games.values())
     return []

@@ -19,6 +19,8 @@ from report_card import (
 )
 from sport_sources import SOURCES, competitions, source_rows
 from sport_boards import BOARD_SOURCES, TEAM_MODELS, load_sport_board, project_team_game
+from cs2_props import (MAP_MARKETS, cs2_projection, cs2_start, grade_cs2_pick,
+                       load_cs2_history, load_cs2_match_stats, search_cs2_players)
 
 st.set_page_config(page_title='Edge Lab', page_icon='📈', layout='wide')
 st.title('📈 Edge Lab')
@@ -187,6 +189,100 @@ def show_research_links(sport):
 
 cached_sport_board = st.cache_data(ttl=120, max_entries=32, show_spinner=False)(load_sport_board)
 cached_team_projection = st.cache_data(ttl=1800, max_entries=64, show_spinner=False)(project_team_game)
+cached_cs2_players = st.cache_data(ttl=1800, max_entries=64, show_spinner=False)(search_cs2_players)
+cached_cs2_history = st.cache_data(ttl=1800, max_entries=64, show_spinner=False)(load_cs2_history)
+cached_cs2_result = st.cache_data(ttl=300, max_entries=128, show_spinner=False)(load_cs2_match_stats)
+
+
+def configured_panda_key():
+    try:
+        return st.secrets.get('PANDASCORE_TOKEN', os.getenv('PANDASCORE_TOKEN', ''))
+    except FileNotFoundError:
+        return os.getenv('PANDASCORE_TOKEN', '')
+
+
+def cs2_data_warning(exc):
+    response = getattr(exc, 'response', None)
+    if response is not None and response.status_code == 403:
+        st.warning('PandaScore denied this stats request. Player history and grading require Historical or eligible Live access.')
+    else:
+        st.warning('PandaScore player data could not be verified for this request.')
+
+
+def show_cs2_kills(rows, token):
+    st.subheader('CS2 kill props')
+    st.caption('Enter a PrizePicks line to model it from PandaScore history and optionally track it on paper.')
+    now = dt.datetime.now(dt.timezone.utc)
+    upcoming = {
+        row['_match_id']: row for row in rows
+        if row.get('Status') == 'not_started' and len(row.get('_teams', {})) == 2
+        and row.get('_map_limit') and (start := cs2_start(row.get('Start (UTC)'))) and start > now
+    }
+    if not upcoming:
+        st.info('No upcoming CS2 match with two verified teams and a known map format.')
+        return
+    match_id = st.selectbox(
+        'CS2 matchup', list(upcoming),
+        format_func=lambda ident: f"{upcoming[ident]['Event']} · {upcoming[ident]['Start (UTC)']}",
+    )
+    match = upcoming[match_id]
+    name = st.text_input('CS2 player handle').strip()
+    if len(name) < 2:
+        return
+    try:
+        players = cached_cs2_players(token, name)
+    except (requests.RequestException, KeyError, ValueError, TypeError) as exc:
+        cs2_data_warning(exc)
+        return
+    candidates = {
+        player['id']: player for player in players
+        if player.get('id') and player.get('name')
+        and (player.get('current_team') or {}).get('id') in match['_teams']
+    }
+    if not candidates:
+        st.info('No matching player was found on the two teams listed for this match.')
+        return
+    player_id = st.selectbox('CS2 player', list(candidates), format_func=lambda ident:
+                             f"{candidates[ident]['name']} · {candidates[ident]['current_team']['name']}")
+    market = st.selectbox('CS2 kills market', [label for label, maps in MAP_MARKETS.items()
+                                               if max(maps) <= match['_map_limit']])
+    line = st.number_input('PrizePicks CS2 line', min_value=0.0, value=None, step=0.5)
+    scope = match_id, player_id, market, line
+    if st.button('Evaluate CS2 kills', disabled=line is None):
+        st.session_state['cs2_evaluation'] = scope
+    if st.session_state.get('cs2_evaluation') != scope:
+        return
+    try:
+        history = cached_cs2_history(token, player_id, now.date() - dt.timedelta(days=1))
+        projection = cs2_projection(history, player_id, market)
+    except (requests.RequestException, KeyError, ValueError, TypeError) as exc:
+        cs2_data_warning(exc)
+        return
+    if projection is None:
+        st.info('At least five verified CS2 maps are required for a projection.')
+        return
+    maps, per_map, estimate = projection
+    st.metric('Projected kills', f'{estimate:.2f}')
+    st.caption(f'{per_map:.2f} kills per map across {maps} verified recent maps. The projection assumes the selected maps are played.')
+    gap = estimate - line
+    if abs(gap) < 0.5:
+        st.info('Pass · projection is within half a kill of the line.')
+        return
+    side = 'More' if gap > 0 else 'Less'
+    st.write(f'Baseline lean: **{side} {line:g}**')
+    if st.button('Track this CS2 paper pick'):
+        kickoff = cs2_start(match['Start (UTC)'])
+        observed = dt.datetime.now(dt.timezone.utc)
+        if observed >= kickoff:
+            st.info('This match has already reached its scheduled start.')
+            return
+        away, home = map(str, match['_teams'])
+        count = save_report_picks(DB, [(
+            f'panda:{match_id}', player_id, market, 'CS2', candidates[player_id]['name'],
+            match['Event'], kickoff.isoformat(), away, home, observed.isoformat(),
+            line, side, estimate, None, None, None, None,
+        )])
+        st.success('Saved to Pick Report Card.' if count else 'This player, match and market are already tracked.')
 
 
 def show_supplemental_sport_board(sport):
@@ -196,11 +292,9 @@ def show_supplemental_sport_board(sport):
         st.caption(f'{BOARD_SOURCES[sport]} · No Odds API credits.')
         panda_key = ''
         if sport == 'CS2':
-            try:
-                default = st.secrets.get('PANDASCORE_TOKEN', os.getenv('PANDASCORE_TOKEN', ''))
-            except FileNotFoundError:
-                default = os.getenv('PANDASCORE_TOKEN', '')
+            default = st.session_state.get('panda_session_token') or configured_panda_key()
             panda_key = st.text_input('PandaScore token', value=default, type='password').strip()
+            st.session_state['panda_session_token'] = panda_key
             if not panda_key:
                 st.info('Enter a PandaScore token to load scheduled, live, and recent CS2 matches.')
                 return
@@ -226,6 +320,8 @@ def show_supplemental_sport_board(sport):
                    if name in board and board[name].notna().any()]
         st.dataframe(board[columns], hide_index=True)
         st.caption('Event scores provide game context. They do not grade player props.')
+        if sport == 'CS2':
+            show_cs2_kills(rows, panda_key)
         if sport not in TEAM_MODELS:
             return
         eligible = {
@@ -1742,7 +1838,7 @@ def store_report_grades(results):
         return cursor.rowcount
 
 
-def refresh_report_grades(picks):
+def refresh_report_grades(picks, panda_key=''):
     now = pd.Timestamp.now(tz='UTC')
     pending = picks.loc[picks['result'].eq('Pending')].copy()
     dates = pd.to_datetime(pending['kickoff'], utc=True).dt.tz_convert('America/New_York')
@@ -1755,6 +1851,18 @@ def refresh_report_grades(picks):
         date = pd.Timestamp(kickoff).tz_convert('America/New_York').date()
         season = date.year + int(date.month >= 9)
         try:
+            if sport == 'CS2':
+                if not panda_key:
+                    continue
+                for pick in group.to_dict('records'):
+                    match_id = int(pick['event_id'].removeprefix('panda:'))
+                    player_id = int(pick['player_id'])
+                    payload = cached_cs2_result(panda_key, match_id, player_id)
+                    outcome = grade_cs2_pick(payload, match_id, player_id, pick['market'],
+                                             pick['line'], pick['side'])
+                    if outcome is not None:
+                        results.append((*outcome, pick['event_id'], pick['player_id'], pick['market']))
+                continue
             if sport == 'NFL':
                 football_season = date.year - int(date.month < 7)
                 if football_season not in football_logs:
@@ -1796,7 +1904,7 @@ def refresh_report_grades(picks):
 
 def show_report_card(key):
     st.subheader('Pick Report Card')
-    st.caption('Tracks NBA points, rebounds and assists, plus NFL passing, rushing and receiving yards.')
+    st.caption('Tracks NBA points, rebounds and assists, NFL passing, rushing and receiving yards, and CS2 paper picks for map kills.')
     with sqlite3.connect(DB) as conn:
         picks = pd.read_sql_query('SELECT * FROM report_card ORDER BY kickoff, observed', conn)
         changes = pd.read_sql_query(
@@ -1809,12 +1917,20 @@ def show_report_card(key):
         else:
             st.dataframe(changes, hide_index=True)
     if picks.empty:
-        st.info('No tracked picks yet. Run an NBA or NFL Best picks comparison before kickoff to record eligible More and Less leans.')
+        st.info('No tracked picks yet. Run an NBA or NFL comparison, or track a CS2 paper pick from the CS2 scoreboard.')
         return
-    nba_pick_watch(picks, key)
+    watchable = picks.loc[picks['sport'].isin(['NBA', 'NFL'])]
+    if not watchable.empty:
+        nba_pick_watch(watchable, key)
+    panda_key = st.session_state.get('panda_session_token') or configured_panda_key()
+    if picks['sport'].eq('CS2').any():
+        if not panda_key:
+            st.caption('Enter your PandaScore token on the CS2 scoreboard to grade CS2 picks.')
+        else:
+            st.caption('Missing, incomplete or forfeited CS2 map results remain pending.')
     if st.button('Check final box scores'):
-        with st.spinner('Checking NBA and NFL results…'):
-            count = refresh_report_grades(picks)
+        with st.spinner('Checking final results…'):
+            count = refresh_report_grades(picks, panda_key)
         with sqlite3.connect(DB) as conn:
             picks = pd.read_sql_query('SELECT * FROM report_card ORDER BY kickoff, observed', conn)
         st.info(f'{count} picks graded. Unverified results stay pending.')
@@ -1826,7 +1942,7 @@ def show_report_card(key):
     columns[2].metric('Hit rate', f"{counts.get('Hit', 0) / decisions:.1%}" if decisions else '—')
     columns[3].metric('Pending', counts.get('Pending', 0))
     st.caption(f"Pushes: {counts.get('Push', 0)} · Voids: {counts.get('Void', 0)}. Hit rate uses hits and misses only.")
-    market = st.selectbox('Filter by stat', ['All stats', *NBA_STAT_COLUMNS, *NFL_STATS])
+    market = st.selectbox('Filter by stat', ['All stats', *NBA_STAT_COLUMNS, *NFL_STATS, *MAP_MARKETS])
     shown = picks if market == 'All stats' else picks.loc[picks['market'].eq(market)]
     graded = shown.loc[shown['result'].isin(['Hit', 'Miss'])]
     if not graded.empty:
@@ -2600,7 +2716,8 @@ with research:
                           'Match scoreboard · token required' if sport == 'CS2' else 'Event scoreboard'),
             'Score, spread and total projections': ('Game-history baseline' if sport in ('NBA', 'NFL')
                                                     or sport in TEAM_MODELS else 'Pending'),
-            'Report Card grading': 'Supported player stats' if sport in ('NBA', 'NFL') else 'Pending',
+            'Report Card grading': ('Supported player stats' if sport in ('NBA', 'NFL') else
+                                    'Map kills · PandaScore Historical or Live' if sport == 'CS2' else 'Pending'),
         }
         for sport in ALL_SPORTS
     ], hide_index=True)
