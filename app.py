@@ -221,12 +221,20 @@ def show_cs2_kills(rows, token):
     if not upcoming:
         st.info('No upcoming CS2 match with two verified teams and a known map format.')
         return
+    requested = {part.strip().casefold() for part in st.query_params.get('cs2_match', '').split('|') if part.strip()}
+    fixture_ids = list(upcoming)
+    presets = [ident for ident, row in upcoming.items()
+               if requested and requested == {team.strip().casefold() for team in row['_teams'].values()}]
     match_id = st.selectbox(
-        'CS2 matchup', list(upcoming),
+        'CS2 matchup', fixture_ids, index=fixture_ids.index(presets[0]) if len(presets) == 1 else 0,
         format_func=lambda ident: f"{upcoming[ident]['Event']} · {upcoming[ident]['Start (UTC)']}",
     )
     match = upcoming[match_id]
-    name = st.text_input('CS2 player handle').strip()
+    if requested and len(presets) != 1:
+        st.info('The shared matchup is unavailable or ambiguous. Select a current matchup to evaluate it manually.')
+    prefilled = len(presets) == 1 and match_id == presets[0]
+    requested_player = st.query_params.get('cs2_player', '')[:40] if prefilled else ''
+    name = st.text_input('CS2 player handle', value=requested_player).strip()
     if len(name) < 2:
         return
     try:
@@ -242,13 +250,29 @@ def show_cs2_kills(rows, token):
     if not candidates:
         st.info('No matching player was found on the two teams listed for this match.')
         return
-    player_id = st.selectbox('CS2 player', list(candidates), format_func=lambda ident:
+    player_ids = list(candidates)
+    exact = [ident for ident, player in candidates.items() if
+             player['name'].casefold() == requested_player.casefold()]
+    player_id = st.selectbox('CS2 player', player_ids,
+                             index=player_ids.index(exact[0]) if len(exact) == 1 else 0,
+                             format_func=lambda ident:
                              f"{candidates[ident]['name']} · {candidates[ident]['current_team']['name']}")
-    market = st.selectbox('CS2 kills market', [label for label, maps in MAP_MARKETS.items()
-                                               if max(maps) <= match['_map_limit']])
-    line = st.number_input('PrizePicks CS2 line', min_value=0.0, value=None, step=0.5)
+    markets = [label for label, maps in MAP_MARKETS.items() if max(maps) <= match['_map_limit']]
+    requested_market = st.query_params.get('cs2_market', '') if prefilled else ''
+    market = st.selectbox('CS2 kills market', markets,
+                          index=markets.index(requested_market) if requested_market in markets else 0)
+    try:
+        preset_line = float(st.query_params.get('cs2_line', ''))
+    except ValueError:
+        preset_line = None
+    if not (prefilled and preset_line is not None and 0 <= preset_line <= 150):
+        preset_line = None
+    line = st.number_input('PrizePicks CS2 line', min_value=0.0, value=preset_line, step=0.5)
     scope = match_id, player_id, market, line
-    if st.button('Evaluate CS2 kills', disabled=line is None):
+    evaluate = st.button('Evaluate CS2 kills', disabled=line is None)
+    shared = (prefilled and len(exact) == 1 and player_id == exact[0]
+              and market == requested_market and line == preset_line and line is not None)
+    if evaluate or shared:
         st.session_state['cs2_evaluation'] = scope
     if st.session_state.get('cs2_evaluation') != scope:
         return
@@ -288,7 +312,8 @@ def show_cs2_kills(rows, token):
 def show_supplemental_sport_board(sport):
     if sport not in BOARD_SOURCES:
         return
-    with st.expander(f'{sport} scoreboard and schedule'):
+    shared_cs2 = sport == 'CS2' and bool(st.query_params.get('cs2_match'))
+    with st.expander(f'{sport} scoreboard and schedule', expanded=shared_cs2):
         st.caption(f'{BOARD_SOURCES[sport]} · No Odds API credits.')
         panda_key = ''
         if sport == 'CS2':
@@ -300,7 +325,7 @@ def show_supplemental_sport_board(sport):
                 return
         load = st.button(f'Load {sport} scoreboard')
         scope = sport, sha256(panda_key.encode()).hexdigest()
-        if load:
+        if load or shared_cs2:
             st.session_state['supplemental_board'] = scope
         if st.session_state.get('supplemental_board') != scope:
             return
@@ -2462,7 +2487,9 @@ with best:
         boards.append(frame[template.columns])
         board_ids.append(sha256(upload.getvalue()).hexdigest())
 
-    pick_sport = st.selectbox('Pick sport', ALL_SPORTS)
+    requested_sport = st.query_params.get('sport')
+    pick_sport = st.selectbox('Pick sport', ALL_SPORTS,
+                             index=ALL_SPORTS.index(requested_sport) if requested_sport in ALL_SPORTS else 0)
     show_supplemental_sport_board(pick_sport)
     with st.expander(f'{pick_sport} research sources'):
         show_research_links(pick_sport)
