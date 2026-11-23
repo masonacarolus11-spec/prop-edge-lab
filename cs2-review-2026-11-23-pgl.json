@@ -1,0 +1,12 @@
+[
+  {"Player":"huasopeek","Match":"9z vs Lynn Vision","Market":"Map 1 kills","PrizePicks line":15,"Source projection":13.9,"Typical range (±)":4.1,"Review":"Less"},
+  {"Player":"luchov","Match":"9z vs Lynn Vision","Market":"Map 1 kills","PrizePicks line":15.5,"Source projection":13.9,"Typical range (±)":4.1,"Review":"Less"},
+  {"Player":"dgt","Match":"9z vs Lynn Vision","Market":"Map 1 kills","PrizePicks line":15.5,"Source projection":15.4,"Typical range (±)":4.5,"Review":"Pass · near line; model and recent form disagree"},
+  {"Player":"nilo","Match":"HEROIC vs Imperial","Market":"Map 1 kills","PrizePicks line":16,"Source projection":15.8,"Typical range (±)":4.7,"Review":"Pass · near line; model and recent form disagree"},
+  {"Player":"martinezsa","Match":"HEROIC vs Imperial","Market":"Map 1 kills","PrizePicks line":14.5,"Source projection":15.5,"Typical range (±)":4.6,"Review":"More"},
+  {"Player":"noway","Match":"HEROIC vs Imperial","Market":"Map 1 kills","PrizePicks line":12.5,"Source projection":14.8,"Typical range (±)":4.4,"Review":"More"},
+  {"Player":"VINI","Match":"HEROIC vs Imperial","Market":"Map 1 kills","PrizePicks line":12.5,"Source projection":14.7,"Typical range (±)":4.3,"Review":"More"},
+  {"Player":"poiii","Match":"100 Thieves vs Chinggis Warriors","Market":"Map 1 kills","PrizePicks line":15.5,"Source projection":18.7,"Typical range (±)":5.5,"Review":"More"},
+  {"Player":"device","Match":"100 Thieves vs Chinggis Warriors","Market":"Map 1 kills","PrizePicks line":15.5,"Source projection":18.1,"Typical range (±)":5.3,"Review":"More"},
+  {"Player":"s1mple","Match":"Liquid vs BC.Game","Market":"Map 1 kills","PrizePicks line":15.5,"Source projection":15.8,"Typical range (±)":4.7,"Review":"Pass · near line; model and recent form disagree"}
+]

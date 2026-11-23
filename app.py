@@ -383,22 +383,31 @@ def show_supplemental_sport_board(sport):
 
 
 def show_cs2_review(sport):
-    if sport != 'CS2' or st.query_params.get('cs2_review') != '2026-11-23':
+    review = st.query_params.get('cs2_review')
+    if sport != 'CS2' or review not in ('2026-11-23', '2026-11-23-pgl'):
         return
-    path = Path(__file__).with_name('cs2-review-2026-11-23.json')
+    path = Path(__file__).with_name(f'cs2-review-{review}.json')
     rows = json.loads(path.read_text(encoding='utf-8'))
     report = pd.DataFrame(rows)
-    st.subheader('10 CS2 prop reviews · November 23')
-    st.caption('One pregame lean and nine completed-map results. The completed rows compare published lines with final kills.')
+    if review == '2026-11-23-pgl':
+        st.subheader('10 new CS2 prop reviews · PGL Singapore')
+        st.caption('November 23 Pacific · Map 1 kills · 5 More leans, 2 Less leans, 3 passes.')
+        st.caption('Lines and projections are from the 17:06 UTC source snapshot. Edge Lab marks Pass when the projection is less than one kill from the line or the source flags a disagreement.')
+    else:
+        st.subheader('10 CS2 prop reviews · November 23')
+        st.caption('One pregame lean and nine completed-map results. The completed rows compare published lines with final kills.')
     st.dataframe(report, hide_index=True)
-    st.caption('sk0R’s historical average is the figure reported by PickFinder. These are dated observations and the live lines may move.')
-    st.markdown(
-        '[Reported upcoming line](https://www.pickfinder.app/best-prizepicks-picks/cs2) · '
-        '[Reported two-map lines](https://propavix.com/props) · '
-        '[Final map stats](https://www.hltv.org/matches/2400373/virtuspro-vs-iberian-soul-nodwin-clutch-series-14)'
-    )
+    if review == '2026-11-23-pgl':
+        st.markdown('[CS2Props lines and projections](https://cs2props.org/)')
+    else:
+        st.caption('sk0R’s historical average is the figure reported by PickFinder. These are dated observations and the live lines may move.')
+        st.markdown(
+            '[Reported upcoming line](https://www.pickfinder.app/best-prizepicks-picks/cs2) · '
+            '[Reported two-map lines](https://propavix.com/props) · '
+            '[Final map stats](https://www.hltv.org/matches/2400373/virtuspro-vs-iberian-soul-nodwin-clutch-series-14)'
+        )
     st.download_button('Download the 10 CS2 reviews', report.to_csv(index=False),
-                       'cs2-review-2026-11-23.csv', mime='text/csv')
+                       f'cs2-review-{review}.csv', mime='text/csv')
 
 
 @st.cache_data(ttl=86400, max_entries=128, show_spinner=False)
