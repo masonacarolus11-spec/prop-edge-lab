@@ -410,6 +410,84 @@ def show_cs2_review(sport):
                        f'cs2-review-{review}.csv', mime='text/csv')
 
 
+def show_nba_review(sport):
+    if sport != 'NBA' or st.query_params.get('nba_review') != '2026-11-23':
+        return
+    payload = json.loads(Path(__file__).with_name('nba-review-2026-11-23.json').read_text(encoding='utf-8'))
+    rows = payload['rows']
+    st.subheader('40 NBA prop evaluations · November 23')
+    counts = Counter(row['lean'] for row in rows)
+    st.caption(f"{counts['More']} More leans · {counts['Less']} Less leans · {counts['Pass']} passes")
+    st.caption('Select a table row to see the evidence and the reason for its result.')
+    summary = pd.DataFrame([
+        {'Player': row['player'], 'Match': row['match'], 'Stat': row['stat'],
+         'PrizePicks line': row['line'], 'Projection': row['projection'], 'Review': row['lean']}
+        for row in rows
+    ])
+    table = st.dataframe(summary, hide_index=True, height=410, on_select='rerun',
+                         selection_mode='single-row', key='nba_review_20261123')
+    chosen = table.selection.rows
+    if chosen:
+        index = chosen[0]
+    else:
+        index = st.selectbox('Player details', range(len(rows)),
+                             format_func=lambda i: f"{rows[i]['player']} · {rows[i]['stat']}")
+    row = rows[index]
+    st.markdown(f"### {row['player']} · {row['stat']}")
+    st.caption(row['match'])
+    metrics = st.columns(4)
+    for column, label, value in zip(
+        metrics, ('Line', 'Season average', 'Last five average', 'Projection'),
+        (row['line'], row['season'], row['recent'], row['projection']),
+    ):
+        column.metric(label, f'{value:g}')
+    explanation = (
+        f"The {row['projection']:.2f} projection is {abs(row['gap']):.2f} "
+        f"{'above' if row['gap'] > 0 else 'below'} the line."
+        if row['gap'] else 'The projection matches the posted line.'
+    )
+    if row['reason']:
+        explanation += ' ' + row['reason'] + '.'
+    st.write(f"**{row['lean']}** · {explanation}")
+    st.caption('Baseline uses 65% season average and 35% last five. A gap under 0.75 or a reported Out, Doubtful, or Questionable status is a pass.')
+    games = pd.DataFrame(row['games'])
+    rest = (dt.date.fromisoformat('2026-11-23') - dt.date.fromisoformat(games.iloc[0]['date'])).days
+    st.write(f"**Recent form and rest** · Last recorded appearance was {rest} calendar day{'s' if rest != 1 else ''} before the slate. Last-five stat standard deviation: {games['value'].std():.2f}.")
+    above = int(games['value'].gt(row['line']).sum())
+    below = int(games['value'].lt(row['line']).sum())
+    st.caption(f"Against this line in the last five: {above} above, {below} below, {len(games) - above - below} tied.")
+    st.dataframe(games.rename(columns={'date': 'Game date', 'opp': 'Opponent', 'mins': 'Minutes',
+                                      'value': row['stat']}), hide_index=True)
+    show_minutes_check(row['projection'], games['mins'].mean(), row['line'],
+                       games['mins'].min(), games['mins'].max(), f"review_minutes:{index}")
+    st.markdown('#### Availability and matchup')
+    away, _, home = row['match'].partition(' at ')
+    venue = 'home' if row['team'] == home else 'away'
+    st.write(f"**Venue** · {row['team']} plays {venue}. No home/away split adjustment was applied.")
+    st.caption('Selected entries from the NBA injury report at noon ET. Lineups and absences can change after that report.')
+    st.write(f"**Player status** · {row['injury'] or 'No confirmed designation in this review'}")
+    for column, label, team in zip(st.columns(2), ('Teammates', 'Opponents'), (row['team'], row['opponent'])):
+        with column:
+            st.markdown(f'**{label} · {team}**')
+            if team in payload['pending']:
+                st.caption('The team had not submitted its report at the time checked.')
+            else:
+                others = [entry for entry in payload['injuries'].get(team, []) if entry[0] != row['player']]
+                if not others:
+                    st.caption('No other status verified for this review.')
+                for name, status, context in others:
+                    st.markdown(f'**{name} · {status}**  \n{context}')
+    if row['spread'] is not None and row['total'] is not None:
+        risk = ' A spread this large can put late minutes at risk.' if row['spread'] >= 12 else ''
+        st.write(f"**Game environment** · PrizePicks game total {row['total']:g} and spread magnitude {row['spread']:g}.{risk}")
+    st.caption('Injuries and the game environment provide context. The baseline does not adjust for those factors. Starting lineups, usage, position defense, exact sportsbook prices and line movement were unverified in this snapshot.')
+    st.markdown(
+        f"[Player game log]({row['stats_url']}) · "
+        '[PrizePicks board](https://www.prizepicks.com/sport/nba) · '
+        '[NBA injury report](https://ak-static.cms.nba.com/referee/injury/Injury-Report_2026-11-23_12_00PM.pdf)'
+    )
+
+
 @st.cache_data(ttl=86400, max_entries=128, show_spinner=False)
 def find_weather_locations(city):
     response = requests.get(
@@ -2519,6 +2597,7 @@ with best:
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS,
                              index=ALL_SPORTS.index(requested_sport) if requested_sport in ALL_SPORTS else 0)
     show_cs2_review(pick_sport)
+    show_nba_review(pick_sport)
     show_supplemental_sport_board(pick_sport)
     with st.expander(f'{pick_sport} research sources'):
         show_research_links(pick_sport)
