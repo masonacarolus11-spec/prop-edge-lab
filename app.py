@@ -560,7 +560,9 @@ def show_cs2_review(sport):
 
 def show_nba_review(sport):
     review = st.query_params.get('nba_review')
-    if sport != 'NBA' or review not in ('2026-11-23', '2026-11-23-batch2', '2026-11-24'):
+    if sport != 'NBA' or review not in (
+        '2026-11-23', '2026-11-23-batch2', '2026-11-24', '2026-11-24-scan40',
+    ):
         return
     payload = json.loads(Path(__file__).with_name(f'nba-review-{review}.json').read_text(encoding='utf-8'))
     rows = payload['rows']
@@ -568,10 +570,14 @@ def show_nba_review(sport):
     title = f"{len(rows)}{' more' if review.endswith('-batch2') else ''} NBA prop evaluations"
     st.subheader(f"{title} · {payload.get('date_label', 'November 23')}")
     counts = Counter(row['lean'] for row in rows)
-    st.caption(f"{counts['More']} More leans · {counts['Less']} Less leans · {counts['Pass']} passes")
+    scan_snapshot = review == '2026-11-24-scan40'
+    rechecks = f" · {counts['Recheck']} rechecks" if scan_snapshot else ''
+    st.caption(f"{counts['More']} More leans · {counts['Less']} Less leans · {counts['Pass']} passes{rechecks}")
+    if scan_snapshot:
+        st.caption('Saved PrizePicks scan. Lines are from the original review and may have changed.')
     st.caption('Select a table row to see the evidence and the reason for its result.')
     summary = pd.DataFrame([
-        {'Player': row['player'], 'Match': row['match'], 'Stat': row['stat'],
+        {'Player': row['player'], **({'Match': row['match']} if 'match' in row else {}), 'Stat': row['stat'],
          'PrizePicks line': row['line'], 'Projection': row['projection'], 'Review': row['lean']}
         for row in rows
     ])
@@ -585,6 +591,21 @@ def show_nba_review(sport):
                              format_func=lambda i: f"{rows[i]['player']} · {rows[i]['stat']}")
     row = rows[index]
     st.markdown(f"### {row['player']} · {row['stat']}")
+    if scan_snapshot:
+        gap = row['projection'] - row['line']
+        for column, label, value in zip(
+            st.columns(3), ('PrizePicks line', 'Projection', 'Difference'),
+            (f"{row['line']:g}", f"{row['projection']:.2f}", f'{gap:+.2f}'),
+        ):
+            column.metric(label, value)
+        reasons = {
+            'More': 'The scan favored More at this line.',
+            'Less': 'The scan favored Less at this line.',
+            'Recheck': 'The model was sensitive to changes in playing time.',
+            'Pass': 'The model and sportsbook consensus were within three percentage points.',
+        }
+        st.write(f"**{row['lean']}** · {reasons[row['lean']]}")
+        return
     st.caption(row['match'])
     if row.get('line_source'):
         st.caption(f"Line source: {row['line_source']}.")
