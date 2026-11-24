@@ -1602,7 +1602,7 @@ def show_minutes_check(projection, expected_minutes, line, low, high, key):
         projection, expected_minutes, line, high,
     )[1]:
         st.info('This prop changes side or moves near the line within the recent minutes range.')
-    minutes = st.slider('Try a playing-time scenario', 0.0, max(48.0, high, expected_minutes),
+    minutes = st.slider('Try a playing-time scenario', 0.0, float(max(48.0, high, expected_minutes)),
                         float(expected_minutes), step=0.1, key=key)
     estimate, side = minutes_scenario(projection, expected_minutes, line, minutes)
     st.write(f'**{side}** at {minutes:.1f} minutes · **{estimate:.2f}** projected against a **{line:g}** line.')
