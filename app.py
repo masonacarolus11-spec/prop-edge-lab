@@ -22,6 +22,8 @@ from sport_boards import BOARD_SOURCES, TEAM_MODELS, load_sport_board, project_t
 from cs2_props import (MAP_MARKETS, cs2_projection, cs2_start, grade_cs2_pick,
                        load_cs2_history, load_cs2_match_stats, search_cs2_players)
 from nba_rebounds import missed_shot_profiles
+from dota_props import (DOTA_MAPS, DOTA_MARKETS, DOTA_STATS, dota_final_game, dota_final_match,
+                        dota_grade, dota_history, dota_projection, search_dota_players)
 
 st.set_page_config(page_title='Edge Lab', page_icon='📈', layout='wide')
 st.title('📈 Edge Lab')
@@ -183,7 +185,18 @@ ADDITIONAL_RESEARCH_LINKS = {
 }
 
 def show_research_links(sport):
-    for category, label, url, description in (*RESEARCH_LINKS[sport], *ADDITIONAL_RESEARCH_LINKS[sport]):
+    if sport == 'Dota 2':
+        st.markdown('**Connected data** · [PandaScore coverage and plans](https://developers.pandascore.co/docs/plan-reference)')
+        links = (
+            ('Patch changes', 'Valve', 'https://www.dota2.com/patches', 'Official balance changes and gameplay updates.'),
+            ('Tournament and roster context', 'Liquipedia', 'https://liquipedia.net/dota2/Main_Page', 'Brackets, rosters and stand-ins.'),
+            ('Draft and match stats', 'OpenDota', 'https://www.opendota.com/', 'Parsed match histories and draft context where available.'),
+            ('Hero and lane trends', 'Dotabuff', 'https://www.dotabuff.com/', 'Hero, role and matchup trends.'),
+            ('Event schedules', 'ESL Pro Tour', 'https://pro.eslgaming.com/tour/dota2/', 'Organizer schedules and tournament format.'),
+        )
+    else:
+        links = (*RESEARCH_LINKS[sport], *ADDITIONAL_RESEARCH_LINKS[sport])
+    for category, label, url, description in links:
         st.markdown(f'**{category}** · [{label}]({url})  \n{description}')
     st.caption('Manual research links · Open a source for current information. The scan does not fetch these pages or use them to rank props.')
 
@@ -193,6 +206,10 @@ cached_team_projection = st.cache_data(ttl=1800, max_entries=64, show_spinner=Fa
 cached_cs2_players = st.cache_data(ttl=1800, max_entries=64, show_spinner=False)(search_cs2_players)
 cached_cs2_history = st.cache_data(ttl=1800, max_entries=64, show_spinner=False)(load_cs2_history)
 cached_cs2_result = st.cache_data(ttl=300, max_entries=128, show_spinner=False)(load_cs2_match_stats)
+cached_dota_players = st.cache_data(ttl=1800, max_entries=64, show_spinner=False)(search_dota_players)
+cached_dota_history = st.cache_data(ttl=1800, max_entries=64, show_spinner=False)(dota_history)
+cached_dota_match = st.cache_data(ttl=300, max_entries=64, show_spinner=False)(dota_final_match)
+cached_dota_game = st.cache_data(ttl=300, max_entries=128, show_spinner=False)(dota_final_game)
 
 
 def configured_panda_key():
@@ -206,6 +223,8 @@ def cs2_data_warning(exc):
     response = getattr(exc, 'response', None)
     if response is not None and response.status_code == 403:
         st.warning('PandaScore denied this stats request. Player history and grading require Historical or eligible Live access.')
+    elif response is not None and response.status_code == 429:
+        st.warning('PandaScore reached its request limit. Wait before trying again.')
     else:
         st.warning('PandaScore player data could not be verified for this request.')
 
@@ -310,19 +329,136 @@ def show_cs2_kills(rows, token):
         st.success('Saved to Pick Report Card.' if count else 'This player, match and market are already tracked.')
 
 
+def show_dota_props(rows, token):
+    st.subheader('Evaluate Dota 2 prop')
+    st.caption('Choose an upcoming match and enter the current PrizePicks line. PandaScore supplies match and player data.')
+    now = dt.datetime.now(dt.timezone.utc)
+    upcoming = {
+        row['_match_id']: row for row in rows
+        if row.get('Status') == 'not_started' and len(row['_teams']) == 2
+        and row['_map_limit'] and (start := cs2_start(row.get('Start (UTC)'))) and start > now
+    }
+    if not upcoming:
+        st.info('No upcoming Dota 2 match with two listed teams and a known series format.')
+        return
+    match_id = st.selectbox('Dota 2 matchup', upcoming, format_func=lambda ident:
+                            f"{upcoming[ident]['Event']} · {upcoming[ident]['Start (UTC)']}")
+    match = upcoming[match_id]
+    teams = match['_teams']
+    st.caption(f"{match['Competition'] or 'Competition unavailable'} · Up to {match['_map_limit']} maps")
+    finished = [row for row in rows if row['Status'] == 'finished' and not row['_forfeit']
+                and row['_winner'] in row['_teams']
+                and (start := cs2_start(row.get('Start (UTC)'))) and start < now]
+    finished.sort(key=lambda row: cs2_start(row['Start (UTC)']), reverse=True)
+    for team_id, team_name in teams.items():
+        sample = [row for row in finished if team_id in row['_teams']][:5]
+        if sample:
+            wins = sum(row['_winner'] == team_id for row in sample)
+            st.caption(f'{team_name} · {wins}–{len(sample) - wins} over {len(sample)} recent available series')
+    meetings = [row for row in finished if row['_teams'].keys() == teams.keys()]
+    if meetings:
+        st.caption(f"Last available head-to-head · {meetings[0]['Score'] or meetings[0]['Event']}")
+    if match['_detailed'] is False:
+        st.caption('PandaScore does not list detailed stats for this fixture. Paper grading may remain pending.')
+
+    with st.form('dota_player_search_form'):
+        handle = st.text_input('Dota 2 player handle', max_chars=40).strip()
+        search = st.form_submit_button('Find Dota 2 player')
+    search_scope = match_id, sha256(token.encode()).hexdigest()
+    if search and len(handle) >= 2:
+        st.session_state['dota_player_search'] = search_scope, handle
+    saved_search = st.session_state.get('dota_player_search')
+    if not saved_search or saved_search[0] != search_scope:
+        return
+    try:
+        players = cached_dota_players(token, saved_search[1])
+        candidates = {player['id']: player for player in players
+                      if player.get('id') and player.get('name')
+                      and (player.get('current_team') or {}).get('id') in teams}
+    except (requests.RequestException, KeyError, ValueError, TypeError) as exc:
+        cs2_data_warning(exc)
+        return
+    if not candidates:
+        st.info('No matching handle was found on the two listed rosters.')
+        return
+    player_id = st.selectbox('Dota 2 player', candidates, format_func=lambda ident:
+                             f"{candidates[ident]['name']} · {teams[candidates[ident]['current_team']['id']]}")
+    st.caption('Roster association comes from PandaScore. Check the organizer for starters and stand-ins.')
+    maps = st.selectbox('Dota 2 maps', [label for label, positions in DOTA_MAPS.items()
+                                       if max(positions) <= match['_map_limit']])
+    st.caption('The projection assumes every selected map is played.')
+    stat = st.selectbox('Dota 2 stat', DOTA_STATS)
+    market = f'{maps} {stat.lower()}'
+    line = st.number_input('PrizePicks Dota 2 line', min_value=0.0, value=None, step=0.5)
+    scope = search_scope, player_id, market, line
+    if st.button('Evaluate Dota 2 line', disabled=line is None):
+        st.session_state['dota_evaluation'] = scope
+    if line is None or st.session_state.get('dota_evaluation') != scope:
+        return
+    team_id = candidates[player_id]['current_team']['id']
+    opponent_id = next(ident for ident in teams if ident != team_id)
+    try:
+        history = cached_dota_history(token, player_id, now.date() - dt.timedelta(days=1))
+        projection = dota_projection(history, player_id, team_id, opponent_id, market)
+    except (requests.RequestException, KeyError, ValueError, TypeError) as exc:
+        cs2_data_warning(exc)
+        return
+    if projection is None:
+        st.info('The baseline needs at least five verified recent maps with this team.')
+        return
+    estimate = projection['estimate']
+    st.metric(f'Projected {stat.lower()}', f'{estimate:g}', delta=f'{estimate - line:+.2f} vs. line', delta_color='off')
+    with st.expander('Why this projection?', expanded=True):
+        st.write(f"Across {projection['sample']} verified maps in the last 90 days, the player averaged "
+                 f"{projection['average']:.2f} per map. The last five averaged {projection['recent']:.2f}. "
+                 f"Map-to-map standard deviation was {projection['deviation']:.2f}.")
+        st.caption('The baseline weights the full sample at 65% and the latest five maps at 35%.')
+        if projection['opponent_games']:
+            st.write(f"Against {teams[opponent_id]}, the player averaged {projection['opponent_average']:.2f} "
+                     f"over {projection['opponent_games']} maps in this sample.")
+            if projection['opponent_weight']:
+                st.caption(f"The opponent split gets {projection['opponent_weight']:.1%} of the final estimate.")
+        if projection['heroes']:
+            st.write('Most played heroes · ' + ', '.join(f'{hero} ({count})' for hero, count in projection['heroes']))
+        pace = projection['pace']
+        if pace:
+            st.write('Economy and experience · ' + ' · '.join(
+                f'{pace[key]:g} {label}' for key, label in
+                [('gold_per_min', 'gold/min'), ('xp_per_min', 'XP/min')] if key in pace))
+        st.caption('Hero and pace data provide context. Current draft and patch effects are unmodeled.')
+    if abs(estimate - line) < 0.5:
+        st.info('Pass · the projection is within half a stat of the line.')
+        return
+    side = 'More' if estimate > line else 'Less'
+    st.write(f'Baseline lean · **{side} {line:g}**')
+    if st.button('Track this Dota 2 paper pick'):
+        kickoff = cs2_start(match['Start (UTC)'])
+        observed = dt.datetime.now(dt.timezone.utc)
+        if observed >= kickoff:
+            st.info('This match has already reached its scheduled start.')
+            return
+        away, home = map(str, teams)
+        count = save_report_picks(DB, [(
+            f'dota:{match_id}', player_id, market, 'Dota 2', candidates[player_id]['name'],
+            match['Event'], kickoff.isoformat(), away, home, observed.isoformat(),
+            line, side, estimate, None, None, None, None,
+        )])
+        st.success('Saved to Pick Report Card.' if count else 'This player, match and market are already tracked.')
+
+
 def show_supplemental_sport_board(sport):
     if sport not in BOARD_SOURCES:
         return
     shared_cs2 = sport == 'CS2' and bool(st.query_params.get('cs2_match'))
-    with st.expander(f'{sport} scoreboard and schedule', expanded=shared_cs2):
+    with st.expander(f'{sport} scoreboard and schedule', expanded=shared_cs2 or sport == 'Dota 2'):
         st.caption(f'{BOARD_SOURCES[sport]} · No Odds API credits.')
         panda_key = ''
-        if sport == 'CS2':
+        if sport in ('CS2', 'Dota 2'):
             default = st.session_state.get('panda_session_token') or configured_panda_key()
             panda_key = st.text_input('PandaScore token', value=default, type='password').strip()
             st.session_state['panda_session_token'] = panda_key
             if not panda_key:
-                st.info('Enter a PandaScore token to load scheduled, live, and recent CS2 matches.')
+                st.info(f'Enter a PandaScore token to load scheduled, live, and recent {sport} matches.')
                 return
         load = st.button(f'Load {sport} scoreboard')
         scope = sport, sha256(panda_key.encode()).hexdigest()
@@ -348,6 +484,8 @@ def show_supplemental_sport_board(sport):
         st.caption('Event scores provide game context. They do not grade player props.')
         if sport == 'CS2':
             show_cs2_kills(rows, panda_key)
+        if sport == 'Dota 2':
+            show_dota_props(rows, panda_key)
         if sport not in TEAM_MODELS:
             return
         eligible = {
@@ -2032,6 +2170,19 @@ def refresh_report_grades(picks, panda_key=''):
         date = pd.Timestamp(kickoff).tz_convert('America/New_York').date()
         season = date.year + int(date.month >= 9)
         try:
+            if sport == 'Dota 2':
+                if not panda_key:
+                    continue
+                match_id = int(group.iloc[0]['event_id'].removeprefix('dota:'))
+                match = cached_dota_match(panda_key, match_id)
+                for pick in group.to_dict('records'):
+                    outcome = dota_grade(
+                        match, lambda ident: cached_dota_game(panda_key, ident), match_id,
+                        int(pick['player_id']), pick['market'], pick['line'], pick['side'],
+                    )
+                    if outcome is not None:
+                        results.append((*outcome, pick['event_id'], pick['player_id'], pick['market']))
+                continue
             if sport == 'CS2':
                 if not panda_key:
                     continue
@@ -2085,7 +2236,7 @@ def refresh_report_grades(picks, panda_key=''):
 
 def show_report_card(key):
     st.subheader('Pick Report Card')
-    st.caption('Tracks NBA points, rebounds and assists, NFL passing, rushing and receiving yards, and CS2 paper picks for map kills.')
+    st.caption('Tracks NBA and NFL player props, CS2 map kills, and Dota 2 map kills, deaths, assists and last hits.')
     with sqlite3.connect(DB) as conn:
         picks = pd.read_sql_query('SELECT * FROM report_card ORDER BY kickoff, observed', conn)
         changes = pd.read_sql_query(
@@ -2098,17 +2249,17 @@ def show_report_card(key):
         else:
             st.dataframe(changes, hide_index=True)
     if picks.empty:
-        st.info('No tracked picks yet. Run an NBA or NFL comparison, or track a CS2 paper pick from the CS2 scoreboard.')
+        st.info('No tracked picks yet. Run an NBA or NFL comparison or track a paper pick from the CS2 or Dota 2 scoreboard.')
         return
     watchable = picks.loc[picks['sport'].isin(['NBA', 'NFL'])]
     if not watchable.empty:
         nba_pick_watch(watchable, key)
     panda_key = st.session_state.get('panda_session_token') or configured_panda_key()
-    if picks['sport'].eq('CS2').any():
+    if picks['sport'].isin(['CS2', 'Dota 2']).any():
         if not panda_key:
-            st.caption('Enter your PandaScore token on the CS2 scoreboard to grade CS2 picks.')
+            st.caption('Enter your PandaScore token on the CS2 or Dota 2 scoreboard to grade esports picks.')
         else:
-            st.caption('Missing, incomplete or forfeited CS2 map results remain pending.')
+            st.caption('Missing, incomplete or forfeited map results remain pending.')
     if st.button('Check final box scores'):
         with st.spinner('Checking final results…'):
             count = refresh_report_grades(picks, panda_key)
@@ -2123,7 +2274,9 @@ def show_report_card(key):
     columns[2].metric('Hit rate', f"{counts.get('Hit', 0) / decisions:.1%}" if decisions else '—')
     columns[3].metric('Pending', counts.get('Pending', 0))
     st.caption(f"Pushes: {counts.get('Push', 0)} · Voids: {counts.get('Void', 0)}. Hit rate uses hits and misses only.")
-    market = st.selectbox('Filter by stat', ['All stats', *NBA_STAT_COLUMNS, *NFL_STATS, *MAP_MARKETS])
+    market = st.selectbox('Filter by stat', list(dict.fromkeys(
+        ['All stats', *NBA_STAT_COLUMNS, *NFL_STATS, *MAP_MARKETS, *DOTA_MARKETS],
+    )))
     shown = picks if market == 'All stats' else picks.loc[picks['market'].eq(market)]
     graded = shown.loc[shown['result'].isin(['Hit', 'Miss'])]
     if not graded.empty:
@@ -2732,7 +2885,7 @@ with best:
 with tab1:
     st.subheader('Live sportsbook market discovery')
     sport=st.selectbox('Sport',list(SPORTS),key='live_sport')
-    st.caption('See Research sources for all nine sports. The player-prop scanner supports the five leagues in this menu.')
+    st.caption('See Research sources for all sports. The sportsbook scanner supports the five leagues in this menu.')
     regions=st.selectbox('Odds region',['us','us2','uk','eu','au'])
     markets=st.text_input('Market keys supported by your plan/provider','player_points,player_rebounds,player_assists')
     event_scope = (key_id, sport)
@@ -2908,7 +3061,7 @@ with research:
         for sport in ALL_SPORTS
     ], hide_index=True)
     st.subheader('Research sources and provider coverage')
-    st.caption('All nine sports support manual evaluation. Player-stat adapters are pending.')
+    st.caption('Use the sport-specific panels in Best Picks for supported player history and projections.')
     if st.button('Check active The Odds API coverage', disabled=not api_key):
         st.session_state.pop('research_catalog', None)
         try:

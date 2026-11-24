@@ -22,6 +22,7 @@ SOURCES = {
     'CFB': SportSource('CFB','americanfootball_ncaaf',('cfbfastR / CollegeFootballData',),('https://cfbfastr.sportsdataverse.org/','https://collegefootballdata.com/'),'adapter_needed','Some endpoints require an API key.'),
     'MLB': SportSource('MLB','baseball_mlb',('MLB StatsAPI',),('https://statsapi.mlb.com/',),'adapter_needed','Verify player game logs and pitching markets.'),
     'CS2': SportSource('CS2',None,('PandaScore',),('https://www.pandascore.co/',),'adapter_needed','Verify map-specific kills and licensing before ranking.'),
+    'Dota 2': SportSource('Dota 2',None,('PandaScore',),('https://developers.pandascore.co/docs/plan-reference',),'connected','Fixtures require a token. Player history and final map stats require eligible plan access.'),
     'Tennis': SportSource('Tennis',None,('Jeff Sackmann tennis datasets',),('https://github.com/JeffSackmann/tennis_atp',),'adapter_needed','Historical data alone is not a live prop feed; verify licensing.'),
     'Cricket': SportSource('Cricket',None,('Cricsheet',),('https://cricsheet.org/',),'adapter_needed','Ball-by-ball data requires match/player mapping.'),
     'PGA Golf': SportSource('PGA Golf',None,('Data Golf',),('https://datagolf.com/api-access',),'adapter_needed','API access may require a paid subscription.'),
@@ -32,7 +33,7 @@ def source_rows():
         {
             'sport': sport,
             'odds_coverage': 'Catalog check pending' if source.odds_key or sport in CATALOG_PREFIXES else 'Feed not configured',
-            'stats_status': 'Adapter pending',
+            'stats_status': 'PandaScore · plan dependent' if sport == 'Dota 2' else 'Adapter pending',
             'research_sources': ', '.join(source.research_sources),
             'notes': source.notes,
         }

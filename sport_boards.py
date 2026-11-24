@@ -16,6 +16,7 @@ BOARD_SOURCES = {
     'MLB': 'MLB StatsAPI', 'Tennis': 'ESPN ATP and WTA scoreboards',
     'Cricket': 'ESPN cricket scoreboard', 'PGA Golf': 'ESPN PGA TOUR leaderboard',
     'CS2': 'PandaScore Counter-Strike fixtures',
+    'Dota 2': 'PandaScore Dota 2 fixtures',
 }
 
 
@@ -107,11 +108,14 @@ def load_sport_board(sport, day, end, panda_key=''):
                     if name:
                         rows.append({**row, 'Golfer': name, 'Score': espn_score(golfer.get('score'))})
         return rows
-    if sport == 'CS2' and panda_key:
+    if sport in ('CS2', 'Dota 2') and panda_key:
         games = {}
+        slug = 'csgo' if sport == 'CS2' else 'dota2'
+        params = {'per_page': 20}
+        if sport == 'CS2':
+            params['filter[videogame_title]'] = 'cs-2'
         for phase in ('running', 'upcoming', 'past'):
-            for event in fetch_json(f'https://api.pandascore.co/csgo/matches/{phase}',
-                                    {'per_page': 20, 'filter[videogame_title]': 'cs-2'},
+            for event in fetch_json(f'https://api.pandascore.co/{slug}/matches/{phase}', params,
                                     {'Authorization': f'Bearer {panda_key}'}):
                 names = {item['opponent']['id']: item['opponent']['name']
                          for item in event.get('opponents', []) if item.get('opponent')}
@@ -123,6 +127,8 @@ def load_sport_board(sport, day, end, panda_key=''):
                     'Score': ' · '.join(scores) if phase != 'upcoming' and scores else None,
                     '_match_id': event['id'], '_teams': names,
                     '_map_limit': event.get('number_of_games'),
+                    '_winner': event.get('winner_id'), '_forfeit': event.get('forfeit'),
+                    '_detailed': event.get('detailed_stats'),
                 }
         return list(games.values())
     return []
