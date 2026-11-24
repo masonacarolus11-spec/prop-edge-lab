@@ -385,12 +385,21 @@ def show_supplemental_sport_board(sport):
 
 def show_cs2_review(sport):
     review = st.query_params.get('cs2_review')
-    if sport != 'CS2' or review not in ('2026-11-23', '2026-11-23-pgl'):
+    if sport != 'CS2' or review not in ('2026-11-23', '2026-11-23-pgl', '2026-11-23-pgl50'):
         return
     path = Path(__file__).with_name(f'cs2-review-{review}.json')
     rows = json.loads(path.read_text(encoding='utf-8'))
     report = pd.DataFrame(rows)
-    if review == '2026-11-23-pgl':
+    if review == '2026-11-23-pgl50':
+        st.subheader('50 new CS2 prop reviews · PGL Singapore')
+        pending = pd.to_datetime(report['Start (UTC)'], utc=True).gt(pd.Timestamp.now(tz='UTC'))
+        report.loc[~pending, 'Review'] = 'Past scheduled start · reference'
+        st.caption(f'{int(pending.sum())} before scheduled start · {int((~pending).sum())} past scheduled start')
+        st.caption('PrizePicks lines and source projections were captured before play. Pass means the projection was close to the line, recent data was sparse, or the source flagged disagreement.')
+        report['Scheduled start (Pacific)'] = pd.to_datetime(
+            report.pop('Start (UTC)'), utc=True
+        ).dt.tz_convert('America/Los_Angeles').dt.strftime('%b %d, %I:%M %p')
+    elif review == '2026-11-23-pgl':
         st.subheader('10 new CS2 prop reviews · PGL Singapore')
         st.caption('November 23 Pacific · Map 1 kills · 5 More leans, 2 Less leans, 3 passes.')
         st.caption('Lines and projections are from the 17:06 UTC source snapshot. Edge Lab marks Pass when the projection is less than one kill from the line or the source flags a disagreement.')
@@ -398,7 +407,7 @@ def show_cs2_review(sport):
         st.subheader('10 CS2 prop reviews · November 23')
         st.caption('One pregame lean and nine completed-map results. The completed rows compare published lines with final kills.')
     st.dataframe(report, hide_index=True)
-    if review == '2026-11-23-pgl':
+    if review in ('2026-11-23-pgl', '2026-11-23-pgl50'):
         st.markdown('[CS2Props lines and projections](https://cs2props.org/)')
     else:
         st.caption('sk0R’s historical average is the figure reported by PickFinder. These are dated observations and the live lines may move.')
@@ -407,7 +416,7 @@ def show_cs2_review(sport):
             '[Reported two-map lines](https://propavix.com/props) · '
             '[Final map stats](https://www.hltv.org/matches/2400373/virtuspro-vs-iberian-soul-nodwin-clutch-series-14)'
         )
-    st.download_button('Download the 10 CS2 reviews', report.to_csv(index=False),
+    st.download_button(f'Download the {len(report)} CS2 reviews', report.to_csv(index=False),
                        f'cs2-review-{review}.csv', mime='text/csv')
 
 
