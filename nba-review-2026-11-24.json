@@ -1,0 +1,541 @@
+{
+  "date": "2026-11-24",
+  "date_label": "November 24",
+  "injury_label": "November 23 at 8:30 p.m. ET",
+  "injury_url": "https://ak-static.cms.nba.com/referee/injury/Injury-Report_2026-11-23_08_30PM.pdf",
+  "board_url": "https://www.prizepicks.com/sport/nba?date=2026-11-24&from=2026-11-24",
+  "rows": [
+    {
+      "player": "Cade Cunningham",
+      "line": 24.5,
+      "stat": "Points",
+      "match": "Detroit Pistons at Orlando Magic",
+      "team": "Detroit Pistons",
+      "opponent": "Orlando Magic",
+      "season": 24.2,
+      "recent": 28,
+      "projection": 25.53,
+      "gap": 1.03,
+      "reason": "",
+      "lean": "More",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs ATL Hawks",
+          "mins": 33,
+          "value": 5
+        },
+        {
+          "date": "2026-11-20",
+          "opp": "vs TOR Raptors",
+          "mins": 36,
+          "value": 23
+        },
+        {
+          "date": "2026-11-17",
+          "opp": "vs SAS Spurs",
+          "mins": 37,
+          "value": 27
+        },
+        {
+          "date": "2026-11-14",
+          "opp": "vs MIA Heat",
+          "mins": 36,
+          "value": 33
+        },
+        {
+          "date": "2026-11-12",
+          "opp": "vs WAS Wizards",
+          "mins": 55,
+          "value": 52
+        }
+      ],
+      "injury": "Probable",
+      "stats_url": "https://www.prizepicks.com/research/nba/players/cade-cunningham",
+      "spread": 2.5,
+      "total": 212.5
+    },
+    {
+      "player": "Franz Wagner",
+      "line": 23,
+      "stat": "Points",
+      "match": "Detroit Pistons at Orlando Magic",
+      "team": "Orlando Magic",
+      "opponent": "Detroit Pistons",
+      "season": 24.5,
+      "recent": 26.8,
+      "projection": 25.3,
+      "gap": 2.3,
+      "reason": "",
+      "lean": "More",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs WAS Wizards",
+          "mins": 20,
+          "value": 16
+        },
+        {
+          "date": "2026-11-20",
+          "opp": "vs BKN Nets",
+          "mins": 37,
+          "value": 35
+        },
+        {
+          "date": "2026-11-18",
+          "opp": "vs PHI 76ers",
+          "mins": 36,
+          "value": 27
+        },
+        {
+          "date": "2026-11-16",
+          "opp": "vs BOS Celtics",
+          "mins": 38,
+          "value": 21
+        },
+        {
+          "date": "2026-11-13",
+          "opp": "vs MIL Bucks",
+          "mins": 36,
+          "value": 35
+        }
+      ],
+      "injury": null,
+      "stats_url": "https://www.prizepicks.com/research/nba/players/franz-wagner",
+      "spread": 2.5,
+      "total": 212.5
+    },
+    {
+      "player": "Paul Reed",
+      "line": 7,
+      "stat": "Rebounds",
+      "match": "Detroit Pistons at Orlando Magic",
+      "team": "Detroit Pistons",
+      "opponent": "Orlando Magic",
+      "season": 7.4,
+      "recent": 6.8,
+      "projection": 7.19,
+      "gap": 0.19,
+      "reason": "Projection close to the line",
+      "lean": "Pass",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs DET Pistons",
+          "mins": 25,
+          "value": 5
+        },
+        {
+          "date": "2026-11-20",
+          "opp": "vs TOR Raptors",
+          "mins": 28,
+          "value": 7
+        },
+        {
+          "date": "2026-11-18",
+          "opp": "vs DET Pistons",
+          "mins": 20,
+          "value": 7
+        },
+        {
+          "date": "2026-11-17",
+          "opp": "vs DET Pistons",
+          "mins": 25,
+          "value": 6
+        },
+        {
+          "date": "2026-11-14",
+          "opp": "vs DET Pistons",
+          "mins": 23,
+          "value": 9
+        }
+      ],
+      "injury": null,
+      "stats_url": "https://www.prizepicks.com/research/nba/players/paul-reed",
+      "spread": 2.5,
+      "total": 212.5
+    },
+    {
+      "player": "John Collins",
+      "line": 5.5,
+      "stat": "Rebounds",
+      "match": "Detroit Pistons at Orlando Magic",
+      "team": "Detroit Pistons",
+      "opponent": "Orlando Magic",
+      "season": 5.8,
+      "recent": 5.4,
+      "projection": 5.66,
+      "gap": 0.16,
+      "reason": "Projection close to the line",
+      "lean": "Pass",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs ATL Hawks",
+          "mins": 22,
+          "value": 6
+        },
+        {
+          "date": "2026-11-20",
+          "opp": "vs TOR Raptors",
+          "mins": 20,
+          "value": 6
+        },
+        {
+          "date": "2026-11-18",
+          "opp": "vs NOP Pelicans",
+          "mins": 30,
+          "value": 7
+        },
+        {
+          "date": "2026-11-17",
+          "opp": "vs SAS Spurs",
+          "mins": 23,
+          "value": 1
+        },
+        {
+          "date": "2026-11-14",
+          "opp": "vs MIA Heat",
+          "mins": 26,
+          "value": 7
+        }
+      ],
+      "injury": null,
+      "stats_url": "https://www.prizepicks.com/research/nba/players/john-collins",
+      "spread": 2.5,
+      "total": 212.5
+    },
+    {
+      "player": "Jayson Tatum",
+      "line": 26.5,
+      "stat": "Points",
+      "match": "Boston Celtics at Washington Wizards",
+      "team": "Boston Celtics",
+      "opponent": "Washington Wizards",
+      "season": 26.4,
+      "recent": 26.2,
+      "projection": 26.33,
+      "gap": -0.17,
+      "reason": "Projection close to the line",
+      "lean": "Pass",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs GSW Warriors",
+          "mins": 38,
+          "value": 27
+        },
+        {
+          "date": "2026-11-18",
+          "opp": "vs DEN Nuggets",
+          "mins": 37,
+          "value": 24
+        },
+        {
+          "date": "2026-11-16",
+          "opp": "vs ORL Magic",
+          "mins": 36,
+          "value": 24
+        },
+        {
+          "date": "2026-11-15",
+          "opp": "vs DAL Mavericks",
+          "mins": 30,
+          "value": 32
+        },
+        {
+          "date": "2026-11-11",
+          "opp": "vs TOR Raptors",
+          "mins": 38,
+          "value": 24
+        }
+      ],
+      "injury": null,
+      "stats_url": "https://www.prizepicks.com/research/nba/players/jayson-tatum",
+      "spread": 10.5,
+      "total": 216.5
+    },
+    {
+      "player": "Anthony Davis",
+      "line": 21.5,
+      "stat": "Points",
+      "match": "Boston Celtics at Washington Wizards",
+      "team": "Washington Wizards",
+      "opponent": "Boston Celtics",
+      "season": 25.1,
+      "recent": 24,
+      "projection": 24.71,
+      "gap": 3.21,
+      "reason": "",
+      "lean": "More",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs ORL Magic",
+          "mins": 33,
+          "value": 22
+        },
+        {
+          "date": "2026-11-20",
+          "opp": "vs CHI Bulls",
+          "mins": 34,
+          "value": 36
+        },
+        {
+          "date": "2026-11-18",
+          "opp": "vs TOR Raptors",
+          "mins": 46,
+          "value": 25
+        },
+        {
+          "date": "2026-11-16",
+          "opp": "vs MEM Grizzlies",
+          "mins": 35,
+          "value": 23
+        },
+        {
+          "date": "2026-11-15",
+          "opp": "vs HOU Rockets",
+          "mins": 31,
+          "value": 14
+        }
+      ],
+      "injury": null,
+      "stats_url": "https://www.prizepicks.com/research/nba/players/anthony-davis",
+      "spread": 10.5,
+      "total": 216.5
+    },
+    {
+      "player": "Trae Young",
+      "line": 8.5,
+      "stat": "Assists",
+      "match": "Boston Celtics at Washington Wizards",
+      "team": "Washington Wizards",
+      "opponent": "Boston Celtics",
+      "season": 8.8,
+      "recent": 8.8,
+      "projection": 8.8,
+      "gap": 0.3,
+      "reason": "Projection close to the line",
+      "lean": "Pass",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs ORL Magic",
+          "mins": 28,
+          "value": 11
+        },
+        {
+          "date": "2026-11-20",
+          "opp": "vs CHI Bulls",
+          "mins": 36,
+          "value": 5
+        },
+        {
+          "date": "2026-11-18",
+          "opp": "vs TOR Raptors",
+          "mins": 21,
+          "value": 8
+        },
+        {
+          "date": "2026-11-16",
+          "opp": "vs MEM Grizzlies",
+          "mins": 33,
+          "value": 12
+        },
+        {
+          "date": "2026-11-15",
+          "opp": "vs HOU Rockets",
+          "mins": 26,
+          "value": 8
+        }
+      ],
+      "injury": null,
+      "stats_url": "https://www.prizepicks.com/research/nba/players/trae-young",
+      "spread": 10.5,
+      "total": 216.5
+    },
+    {
+      "player": "Nikola Jokić",
+      "line": 12.5,
+      "stat": "Rebounds",
+      "match": "Dallas Mavericks at Denver Nuggets",
+      "team": "Denver Nuggets",
+      "opponent": "Dallas Mavericks",
+      "season": 10.9,
+      "recent": 11.2,
+      "projection": 11.01,
+      "gap": -1.49,
+      "reason": "",
+      "lean": "Less",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs CHI Bulls",
+          "mins": 42,
+          "value": 18
+        },
+        {
+          "date": "2026-11-20",
+          "opp": "vs HOU Rockets",
+          "mins": 38,
+          "value": 7
+        },
+        {
+          "date": "2026-11-18",
+          "opp": "vs BOS Celtics",
+          "mins": 39,
+          "value": 8
+        },
+        {
+          "date": "2026-11-16",
+          "opp": "vs PHX Suns",
+          "mins": 38,
+          "value": 15
+        },
+        {
+          "date": "2026-11-14",
+          "opp": "vs NOP Pelicans",
+          "mins": 37,
+          "value": 8
+        }
+      ],
+      "injury": null,
+      "stats_url": "https://www.prizepicks.com/research/nba/players/nikola-jokic",
+      "spread": 7.5,
+      "total": 231.5
+    },
+    {
+      "player": "Jamal Murray",
+      "line": 23.5,
+      "stat": "Points",
+      "match": "Dallas Mavericks at Denver Nuggets",
+      "team": "Denver Nuggets",
+      "opponent": "Dallas Mavericks",
+      "season": 26.2,
+      "recent": 26.2,
+      "projection": 26.2,
+      "gap": 2.7,
+      "reason": "",
+      "lean": "More",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs CHI Bulls",
+          "mins": 33,
+          "value": 45
+        },
+        {
+          "date": "2026-11-20",
+          "opp": "vs HOU Rockets",
+          "mins": 36,
+          "value": 14
+        },
+        {
+          "date": "2026-11-18",
+          "opp": "vs BOS Celtics",
+          "mins": 38,
+          "value": 21
+        },
+        {
+          "date": "2026-11-16",
+          "opp": "vs PHX Suns",
+          "mins": 35,
+          "value": 28
+        },
+        {
+          "date": "2026-11-14",
+          "opp": "vs NOP Pelicans",
+          "mins": 38,
+          "value": 23
+        }
+      ],
+      "injury": null,
+      "stats_url": "https://www.prizepicks.com/research/nba/players/jamal-murray",
+      "spread": 7.5,
+      "total": 231.5
+    },
+    {
+      "player": "Daniel Gafford",
+      "line": 6.5,
+      "stat": "Rebounds",
+      "match": "Dallas Mavericks at Denver Nuggets",
+      "team": "Dallas Mavericks",
+      "opponent": "Denver Nuggets",
+      "season": 5.4,
+      "recent": 5.4,
+      "projection": 5.4,
+      "gap": -1.1,
+      "reason": "",
+      "lean": "Less",
+      "games": [
+        {
+          "date": "2026-11-22",
+          "opp": "vs UTA Jazz",
+          "mins": 27,
+          "value": 4
+        },
+        {
+          "date": "2026-11-21",
+          "opp": "vs LAC Clippers",
+          "mins": 30,
+          "value": 10
+        },
+        {
+          "date": "2026-11-18",
+          "opp": "vs GSW Warriors",
+          "mins": 24,
+          "value": 6
+        },
+        {
+          "date": "2026-11-15",
+          "opp": "vs BOS Celtics",
+          "mins": 20,
+          "value": 4
+        },
+        {
+          "date": "2026-11-14",
+          "opp": "vs CLE Cavaliers",
+          "mins": 17,
+          "value": 3
+        }
+      ],
+      "injury": null,
+      "stats_url": "https://www.prizepicks.com/research/nba/players/daniel-gafford",
+      "spread": 7.5,
+      "total": 231.5
+    }
+  ],
+  "injuries": {
+    "Detroit Pistons": [
+      [
+        "Cade Cunningham",
+        "Probable",
+        "Right knee soreness."
+      ],
+      [
+        "Jalen Duren",
+        "Out",
+        "His absence can change Detroit’s frontcourt rotation and rebounding opportunities."
+      ],
+      [
+        "Duncan Robinson",
+        "Out",
+        "Detroit may redistribute wing minutes and shots."
+      ]
+    ],
+    "Orlando Magic": [
+      [
+        "Paolo Banchero",
+        "Out",
+        "His absence can shift Orlando’s shot volume and playmaking."
+      ],
+      [
+        "Jonathan Isaac",
+        "Out",
+        "Orlando’s frontcourt rotation and defensive assignments may change."
+      ]
+    ]
+  },
+  "pending": []
+}

@@ -422,12 +422,13 @@ def show_cs2_review(sport):
 
 def show_nba_review(sport):
     review = st.query_params.get('nba_review')
-    if sport != 'NBA' or review not in ('2026-11-23', '2026-11-23-batch2'):
+    if sport != 'NBA' or review not in ('2026-11-23', '2026-11-23-batch2', '2026-11-24'):
         return
     payload = json.loads(Path(__file__).with_name(f'nba-review-{review}.json').read_text(encoding='utf-8'))
     rows = payload['rows']
-    title = '40 more NBA prop evaluations' if review.endswith('-batch2') else '40 NBA prop evaluations'
-    st.subheader(f'{title} · November 23')
+    slate = payload.get('date', '2026-11-23')
+    title = f"{len(rows)}{' more' if review.endswith('-batch2') else ''} NBA prop evaluations"
+    st.subheader(f"{title} · {payload.get('date_label', 'November 23')}")
     counts = Counter(row['lean'] for row in rows)
     st.caption(f"{counts['More']} More leans · {counts['Less']} Less leans · {counts['Pass']} passes")
     st.caption('Select a table row to see the evidence and the reason for its result.')
@@ -465,7 +466,7 @@ def show_nba_review(sport):
     st.write(f"**{row['lean']}** · {explanation}")
     st.caption('Baseline uses 65% season average and 35% last five. A gap under 0.75 or a reported Out, Doubtful, or Questionable status is a pass.')
     games = pd.DataFrame(row['games'])
-    rest = (dt.date.fromisoformat('2026-11-23') - dt.date.fromisoformat(games.iloc[0]['date'])).days
+    rest = (dt.date.fromisoformat(slate) - dt.date.fromisoformat(games.iloc[0]['date'])).days
     st.write(f"**Recent form and rest** · Last recorded appearance was {rest} calendar day{'s' if rest != 1 else ''} before the slate. Last-five stat standard deviation: {games['value'].std():.2f}.")
     above = int(games['value'].gt(row['line']).sum())
     below = int(games['value'].lt(row['line']).sum())
@@ -476,14 +477,14 @@ def show_nba_review(sport):
                        games['mins'].min(), games['mins'].max(), f"review_minutes:{review}:{index}")
     if row['stat'] == 'Rebounds':
         snapshot = json.loads(
-            Path(__file__).with_name('nba-rebound-misses-2026-11-23.json').read_text(encoding='utf-8')
+            Path(__file__).with_name(f'nba-rebound-misses-{slate}.json').read_text(encoding='utf-8')
         )
         show_rebound_opportunity(snapshot.get(row['opponent'], {}))
     st.markdown('#### Availability and matchup')
     away, _, home = row['match'].partition(' at ')
     venue = 'home' if row['team'] == home else 'away'
     st.write(f"**Venue** · {row['team']} plays {venue}. No home/away split adjustment was applied.")
-    st.caption('Selected entries from the NBA injury report at noon ET. Lineups and absences can change after that report.')
+    st.caption(f"Selected NBA injury report entries from {payload.get('injury_label', 'November 23 at noon ET')}. Lineups and absences can change after the report.")
     st.write(f"**Player status** · {row['injury'] or 'No confirmed designation in this review'}")
     for column, label, team in zip(st.columns(2), ('Teammates', 'Opponents'), (row['team'], row['opponent'])):
         with column:
@@ -500,10 +501,11 @@ def show_nba_review(sport):
         risk = ' A spread this large can put late minutes at risk.' if row['spread'] >= 12 else ''
         st.write(f"**Game environment** · PrizePicks game total {row['total']:g} and spread magnitude {row['spread']:g}.{risk}")
     st.caption('Injuries and the game environment provide context. The baseline does not adjust for those factors. Starting lineups, usage, position defense, exact sportsbook prices and line movement were unverified in this snapshot.')
+    board_url = payload.get('board_url', 'https://www.prizepicks.com/sport/nba')
+    injury_url = payload.get('injury_url', 'https://ak-static.cms.nba.com/referee/injury/Injury-Report_2026-11-23_12_00PM.pdf')
     st.markdown(
         f"[Player game log]({row['stats_url']}) · "
-        '[PrizePicks board](https://www.prizepicks.com/sport/nba) · '
-        '[NBA injury report](https://ak-static.cms.nba.com/referee/injury/Injury-Report_2026-11-23_12_00PM.pdf)'
+        f'[PrizePicks board]({board_url}) · [NBA injury report]({injury_url})'
     )
 
 

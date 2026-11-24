@@ -1,0 +1,20 @@
+{
+  "Dallas Mavericks": {
+    "Opponent missed field goals per game": 47.5,
+    "Opponent missed field goals last five": 48.6,
+    "Opponent shot sample games": 17,
+    "League missed field goals per game": 47.4
+  },
+  "Denver Nuggets": {
+    "Opponent missed field goals per game": 43.9,
+    "Opponent missed field goals last five": 43.2,
+    "Opponent shot sample games": 15,
+    "League missed field goals per game": 47.4
+  },
+  "Orlando Magic": {
+    "Opponent missed field goals per game": 46.5,
+    "Opponent missed field goals last five": 44.6,
+    "Opponent shot sample games": 16,
+    "League missed field goals per game": 47.4
+  }
+}
