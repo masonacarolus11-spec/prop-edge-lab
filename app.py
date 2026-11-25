@@ -1291,8 +1291,11 @@ def pick_evaluation(row):
     if model_stat is not None:
         minutes = value('Expected minutes')
         role = f' at {minutes:.1f} expected minutes' if minutes is not None else ''
-        factors.append(f"Projected {model_stat:.2f}{role}. Season average "
-                       f"{value('Season average'):.2f}; last five {value('Last five average'):.2f}.")
+        projection_detail = f'Projected {model_stat:.2f}{role}.'
+        season, recent = value('Season average'), value('Last five average')
+        if season is not None and recent is not None:
+            projection_detail += f' Season average {season:.2f}, last five {recent:.2f}.'
+        factors.append(projection_detail)
         opportunities = value('Recent opportunities per game')
         if opportunities is not None:
             factors.append(f"Recent opportunities: {opportunities:.1f} per game versus "
@@ -1319,7 +1322,7 @@ def pick_evaluation(row):
         if value('Estimated role'):
             factors.append(f"Estimated role: {value('Estimated role')} based on recent starts.")
     elif status:
-        factors.append(f'NBA research: {status}.')
+        factors.append(f'Player research: {status}.')
     if value('PrizePicks line change'):
         factors.append(f"PrizePicks moved {value('PrizePicks line change'):+g} from the first recorded line.")
     if value('Lopsided game flag') == 'Elevated':
@@ -1327,19 +1330,40 @@ def pick_evaluation(row):
     gap = value('Model–market Over gap (pp)')
     if gap is not None:
         factors.append(f'Model More estimate is {gap:+.1f} percentage points from sportsbook consensus.')
-    return outcome, model_more, factors
+    rating, separator, reason = outcome.partition(' — ')
+    if not separator and outcome.startswith('Hold'):
+        rating, _, reason = outcome.partition(' · ')
+        injury = value('Injury report status')
+        practice = value('Practice status')
+        evidence = ', '.join(str(item) for item in (injury, practice) if item)
+        if evidence:
+            reason = f'{reason.rstrip(".")} ({evidence})'
+    elif outcome.startswith('Model lean:'):
+        gap = value('Model–market Over gap (pp)')
+        if gap is not None:
+            reason = f'The model’s More estimate is {abs(gap):.1f} percentage points {"above" if gap >= 0 else "below"} sportsbook consensus.'
+        else:
+            reason = f'The model favors this side at the posted {offer_line:g} line.'
+    elif outcome.startswith('Sportsbook'):
+        reason = factors[0]
+    elif not separator:
+        reason = (f'{status.rstrip(".")}.' if status else
+                  'No verified player projection or exact-line sportsbook comparison is available.')
+    return rating, reason.rstrip('.') + '.', model_more, factors
 
 
 def show_pick_evaluation(row):
     market = str(row['market']).removeprefix('player_').replace('_', ' ')
     st.markdown(f"**{row['player']} · {market} {row['line']:g}**")
     st.caption(row['event'])
-    outcome, model_more, factors = pick_evaluation(row)
-    st.markdown(f'**{outcome}**')
+    rating, reason, model_more, factors = pick_evaluation(row)
+    st.markdown(f'**{rating}** · {reason}')
     if model_more is not None:
         st.caption(f'Model estimates · More {model_more:.1f}% · Less {100 - model_more:.1f}%')
     if factors:
-        st.markdown('\n'.join(f'- {factor}' for factor in factors))
+        supporting = [factor for factor in factors if factor != reason]
+        if supporting:
+            st.markdown('\n'.join(f'- {factor}' for factor in supporting))
     else:
         st.info('No verified data is available to evaluate this line.')
 
@@ -2324,8 +2348,13 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks'):
             track_model_scan(full_board, sport)
     st.subheader(f'{platform} · {sport} prop review')
     st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
+    explanations = [pick_evaluation(row)[:2] for _, row in full_board.iterrows()]
+    full_board = full_board.assign(
+        Rating=[rating for rating, _ in explanations],
+        Reason=[reason for _, reason in explanations],
+    )
     columns = [
-        'player', 'market', 'line', 'Model signal', 'Projected stat',
+        'player', 'market', 'line', 'Rating', 'Reason', 'Projected stat',
         'side', 'market_estimate_pct', 'comparison_books', 'Auto status', 'Injury report status',
         'Pregame recheck', 'Minutes sensitivity', 'Opponent missed field goals per game',
         'Weather review', 'status', 'event',
