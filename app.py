@@ -2321,6 +2321,8 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks'):
         full_board = pregame_recheck(full_board, sport)
         if sport in adapters:
             track_model_scan(full_board, sport)
+    st.subheader(f'{platform} · {sport} prop review')
+    st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
     columns = [
         'player', 'market', 'line', 'Model signal', 'Projected stat',
         'side', 'market_estimate_pct', 'comparison_books', 'Auto status', 'Injury report status',
@@ -2340,6 +2342,15 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks'):
             st.caption('Baseline blends each team’s season and last-five scoring and opponent points allowed. Negative home spread favors the home team.')
     table_key = sha256((repr(board_scope) + picks.to_json()).encode()).hexdigest()[:18]
     selected = selectable_prop_table(full_board, f'best_picks:{table_key}', visible)
+    if selected is None:
+        selected = st.selectbox(
+            'Player details', range(len(full_board)), key=f'board_details:{table_key}',
+            format_func=lambda index: (
+                f"{full_board.iloc[index]['player']} · "
+                f"{str(full_board.iloc[index]['market']).removeprefix('player_').replace('_', ' ')} "
+                f"{full_board.iloc[index]['line']:g}"
+            ),
+        )
     if selected is not None and selected < len(full_board):
         row = full_board.iloc[selected]
         st.subheader('Selected prop evaluation')
@@ -2855,7 +2866,7 @@ with best:
     if pick_sport not in PICK_MARKETS:
         if not board.empty:
             show_best_picks_board(board, pick_sport, (platform, pick_sport, tuple(board_ids)), platform)
-        st.info(f'Automated sportsbook comparisons for {pick_sport} are pending.')
+        st.info(f'Upload {platform} lines to open the clickable {pick_sport} review. Live prop scanning is unavailable for this sport.')
     else:
         allowed_markets = PICK_MARKETS[pick_sport].split(',')
         st.caption(f'Markets scanned for {pick_sport}: {", ".join(allowed_markets)}.')
@@ -2866,6 +2877,8 @@ with best:
         environment = False
         scan_markets = allowed_markets
         if live_board:
+            auto_load = st.checkbox('Automatically load the first board', value=True,
+                                    help='Loads one game and one market per site and sport in this session. Larger scans use the button.')
             scan_markets = st.multiselect('Markets to load', allowed_markets, default=allowed_markets[:1])
             compare = st.checkbox('Compare with sportsbooks', value=True,
                                   help=f'Turn off to load {platform} lines at half the maximum credit cost.')
@@ -2882,25 +2895,34 @@ with best:
         pick_scope = (key_id, platform, pick_sport, regions, live_board, tuple(board_ids), event_limit,
                       tuple(scan_markets), environment)
         action = f'Load {platform} lines' if live_board else f'Compare {platform} lines'
-        if st.button(action, disabled=not api_key or not scan_markets or (not live_board and board.empty)):
-            st.session_state.pop('prizepicks_matches', None)
+        ready = bool(api_key and scan_markets and (live_board or not board.empty))
+        boards_by_scope = st.session_state.setdefault('best_picks_results', {})
+        attempted = st.session_state.setdefault('best_picks_initial_scans', set())
+        initial_scope = key_id, platform, pick_sport
+        saved_review_open = (platform == 'PrizePicks' and
+                             any(name in st.query_params for name in ('nba_review', 'cs2_review')))
+        initial_scan = (
+            live_board and auto_load and ready and event_limit == 1 and len(scan_markets) == 1
+            and not environment and initial_scope not in attempted and not saved_review_open
+        )
+        if st.button(action, disabled=not ready) or initial_scan:
+            if live_board:
+                attempted.add(initial_scope)
             try:
                 with st.spinner(f'Comparing {platform} lines…'):
                     result = (load_live_prizepicks(api_key, pick_sport, regions, event_limit, scan_markets, compare, environment, platform)
                               if live_board else
                               scan_top_picks(api_key, pick_sport, pick_region, board, event_limit))
-                st.session_state['prizepicks_matches'] = (pick_scope, result)
+                boards_by_scope[pick_scope] = result
             except ProviderError as exc:
                 st.error(str(exc))
         if not api_key:
             st.info('Enter an Odds API key to compare lines.')
-        saved = st.session_state.get('prizepicks_matches')
-        if not live_board and not board.empty and (
-            not saved or saved[0] != pick_scope
-        ):
+        saved = boards_by_scope.get(pick_scope)
+        if not live_board and not board.empty and (saved is None or saved[0].empty):
             show_best_picks_board(board, pick_sport, pick_scope, platform)
-        if saved and saved[0] == pick_scope:
-            picks, checked, targeted, issues = saved[1]
+        if saved is not None:
+            picks, checked, targeted, issues = saved
             st.caption(f'{checked} of {targeted} selected games checked.')
             for issue in issues:
                 st.warning(issue)
