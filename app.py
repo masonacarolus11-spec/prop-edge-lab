@@ -588,7 +588,7 @@ def show_cs2_review(sport):
 def show_nba_review(sport):
     review = st.query_params.get('nba_review')
     if sport != 'NBA' or review not in (
-        '2026-11-23', '2026-11-23-batch2', '2026-11-24', '2026-11-24-scan40',
+        '2026-11-23', '2026-11-23-batch2', '2026-11-24', '2026-11-24-scan40', '2026-11-25-scan60',
     ):
         return
     payload = json.loads(Path(__file__).with_name(f'nba-review-{review}.json').read_text(encoding='utf-8'))
@@ -597,7 +597,7 @@ def show_nba_review(sport):
     title = f"{len(rows)}{' more' if review.endswith('-batch2') else ''} NBA prop evaluations"
     st.subheader(f"{title} · {payload.get('date_label', 'November 23')}")
     counts = Counter(row['lean'] for row in rows)
-    scan_snapshot = review == '2026-11-24-scan40'
+    scan_snapshot = review in ('2026-11-24-scan40', '2026-11-25-scan60')
     rechecks = f" · {counts['Recheck']} rechecks" if scan_snapshot else ''
     st.caption(f"{counts['More']} More leans · {counts['Less']} Less leans · {counts['Pass']} passes{rechecks}")
     if scan_snapshot:
@@ -620,6 +620,8 @@ def show_nba_review(sport):
     st.markdown(f"### {row['player']} · {row['stat']}")
     if scan_snapshot:
         gap = row['projection'] - row['line']
+        if row.get('match'):
+            st.caption(row['match'])
         for column, label, value in zip(
             st.columns(3), ('PrizePicks line', 'Projection', 'Difference'),
             (f"{row['line']:g}", f"{row['projection']:.2f}", f'{gap:+.2f}'),
@@ -631,7 +633,17 @@ def show_nba_review(sport):
             'Recheck': 'The model was sensitive to changes in playing time.',
             'Pass': 'The model and sportsbook consensus were within three percentage points.',
         }
-        st.write(f"**{row['lean']}** · {reasons[row['lean']]}")
+        reason = row.get('reason') or reasons.get(row['lean'], 'See the available scan evidence.')
+        st.write(f"**{row['lean']}** · {reason}")
+        if row.get('season') is not None and row.get('recent') is not None:
+            st.caption(f"Season average {row['season']:g} · Last five {row['recent']:g}")
+        if row.get('injury'):
+            st.caption(f"Injury report at scan time · {row['injury']}")
+        if row.get('updated'):
+            st.caption(f"Source line update · {row['updated']}")
+        if all(field in row for field in ('minutes', 'low_minutes', 'high_minutes')):
+            show_minutes_check(row['projection'], row['minutes'], row['line'],
+                               row['low_minutes'], row['high_minutes'], f"review_minutes:{review}:{index}")
         return
     st.caption(row['match'])
     if row.get('line_source'):
