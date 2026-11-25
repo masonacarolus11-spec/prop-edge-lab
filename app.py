@@ -446,7 +446,7 @@ def show_dota_props(rows, token):
         st.success('Saved to Pick Report Card.' if count else 'This player, match and market are already tracked.')
 
 
-def show_supplemental_sport_board(sport):
+def show_supplemental_sport_board(sport, platform='PrizePicks'):
     if sport not in BOARD_SOURCES:
         return
     shared_cs2 = sport == 'CS2' and bool(st.query_params.get('cs2_match'))
@@ -483,9 +483,11 @@ def show_supplemental_sport_board(sport):
         st.dataframe(board[columns], hide_index=True)
         st.caption('Event scores provide game context. They do not grade player props.')
         if sport == 'CS2':
-            show_cs2_kills(rows, panda_key)
+            if platform == 'PrizePicks':
+                show_cs2_kills(rows, panda_key)
         if sport == 'Dota 2':
-            show_dota_props(rows, panda_key)
+            if platform == 'PrizePicks':
+                show_dota_props(rows, panda_key)
         if sport not in TEAM_MODELS:
             return
         eligible = {
@@ -2312,12 +2314,13 @@ def show_report_card(key):
     st.download_button('Download report card', picks.to_csv(index=False), 'pick-report-card.csv', mime='text/csv')
 
 
-def show_best_picks_board(picks, sport, board_scope):
+def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks'):
     adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
-    full_board = pregame_recheck(full_board, sport)
-    if sport in adapters:
-        track_model_scan(full_board, sport)
+    if platform == 'PrizePicks':
+        full_board = pregame_recheck(full_board, sport)
+        if sport in adapters:
+            track_model_scan(full_board, sport)
     columns = [
         'player', 'market', 'line', 'Model signal', 'Projected stat',
         'side', 'market_estimate_pct', 'comparison_books', 'Auto status', 'Injury report status',
@@ -2351,7 +2354,7 @@ def show_best_picks_board(picks, sport, board_scope):
             details = row.drop(labels=['event_id'], errors='ignore').dropna()
             st.dataframe(details.astype(str).rename('Value'), use_container_width=True)
     st.download_button('Download Best picks board with research', full_board.to_csv(index=False),
-                       f'{sport.lower()}_best_picks.csv', mime='text/csv')
+                       f'{sport.lower()}_{platform.lower()}_best_picks.csv', mime='text/csv')
     if sport == 'NBA':
         st.caption('NBA projections use game logs and injury reports via SportsDataverse. Roles and usage are estimates. Defense rank 1 allows the least. No extra odds credits are used.')
     if sport == 'NFL':
@@ -2374,7 +2377,7 @@ def show_board_research(picks, sport, board_scope, selected_index=None):
 
         board_key = sha256(repr(board_scope).encode()).hexdigest()[:16]
         if selected_index is None:
-            index = st.selectbox('PrizePicks line to research', range(len(lines)), format_func=describe,
+            index = st.selectbox('Platform line to research', range(len(lines)), format_func=describe,
                                  key=f'board_research:{board_key}:line')
         else:
             index = selected_index
@@ -2675,17 +2678,17 @@ def scan_top_picks(key, sport, regions, board, event_limit):
 DFS_BOOK_KEYS = {'prizepicks', 'dabble_us_dfs', 'parlayplay', 'pick6', 'underdog'}
 
 
-def compare_live_event(data, event, markets):
+def compare_live_event(data, event, markets, platform='PrizePicks'):
     books = data['bookmakers']
-    prizepicks = sportsbook_rows({
-        'bookmakers': [book for book in books if book.get('key') == 'prizepicks']
+    platform_rows = sportsbook_rows({
+        'bookmakers': [book for book in books if book.get('key') == platform.casefold()]
     })
-    if prizepicks.empty:
+    if platform_rows.empty:
         return pd.DataFrame()
-    prizepicks['line'] = pd.to_numeric(prizepicks['line'], errors='coerce')
+    platform_rows['line'] = pd.to_numeric(platform_rows['line'], errors='coerce')
     board = (
-        prizepicks.loc[prizepicks['market'].isin(markets) & prizepicks['line'].notna()
-                       & prizepicks['player'].fillna('').str.strip().ne(''),
+        platform_rows.loc[platform_rows['market'].isin(markets) & platform_rows['line'].notna()
+                       & platform_rows['player'].fillna('').str.strip().ne(''),
                        ['player', 'market', 'line', 'updated']]
         .drop_duplicates(['player', 'market', 'line'])
         .assign(event=event_label(event))
@@ -2704,14 +2707,14 @@ def compare_live_event(data, event, markets):
         on=['player', 'market', 'line'], how='left', validate='one_to_one',
     )
     return results.assign(
-        event_id=event['id'], starts_utc=event['commence_time'],
+        event_id=event['id'], starts_utc=event['commence_time'], platform=platform,
         status=results['market_estimate_pct'].notna().map({
             True: 'Matched', False: 'No exact sportsbook comparison',
         }),
     )
 
 
-def load_live_prizepicks(key, sport, regions, event_limit, markets, compare, environment=False):
+def load_live_prizepicks(key, sport, regions, event_limit, markets, compare, environment=False, platform='PrizePicks'):
     events = fetch_events(key, SPORTS[sport])
     now = dt.datetime.now(dt.timezone.utc)
     upcoming = []
@@ -2732,11 +2735,11 @@ def load_live_prizepicks(key, sport, regions, event_limit, markets, compare, env
             data, remaining = fetch_event_odds(
                 key, SPORTS[sport], event['id'], regions, ','.join(requested)
             )
-            frame = compare_live_event(data, event, markets)
+            frame = compare_live_event(data, event, markets, platform)
             if environment and not frame.empty:
                 frame = frame.assign(**game_market_context(data, event))
             if not compare and not frame.empty:
-                frame['status'] = 'PrizePicks line only'
+                frame['status'] = f'{platform} line only'
         except ProviderError as exc:
             issues.append(f'{event_label(event)} — {exc}')
             if exc.code in ('access_denied', 'rate_limited'):
@@ -2749,7 +2752,7 @@ def load_live_prizepicks(key, sport, regions, event_limit, markets, compare, env
         if not frame.empty:
             results.append(frame)
         else:
-            issues.append(f'{event_label(event)} — No standard PrizePicks lines returned.')
+            issues.append(f'{event_label(event)} — No standard {platform} lines returned.')
         if remaining == '0':
             issues.append('The provider reported zero remaining credits at fetch time.')
             break
@@ -2757,7 +2760,7 @@ def load_live_prizepicks(key, sport, regions, event_limit, markets, compare, env
     board = (pd.concat(results, ignore_index=True)
              .sort_values('market_estimate_pct', ascending=False, kind='stable')
              if results else pd.DataFrame())
-    if not board.empty:
+    if not board.empty and platform == 'PrizePicks':
         try:
             board = record_board_observations(board, sport)
         except sqlite3.Error:
@@ -2788,20 +2791,21 @@ with st.sidebar:
 best,tab1,tab2,tab3,tab4,research,report_card=st.tabs(['Best picks', '🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup','Research sources','Pick Report Card'])
 key_id = sha256(api_key.encode()).hexdigest()
 with best:
-    st.subheader('PrizePicks board by sport')
-    source_mode = st.radio('PrizePicks line source', ['Load from feed', 'Upload CSVs'], horizontal=True)
+    platform = st.selectbox('Pick site', ['PrizePicks', 'Underdog'])
+    st.subheader(f'{platform} board by sport')
+    source_mode = st.radio(f'{platform} line source', ['Load from feed', 'Upload CSVs'], horizontal=True)
     live_board = source_mode == 'Load from feed'
     if live_board:
-        st.caption('Loads standard PrizePicks lines from The Odds API for the selected upcoming games and markets. Feed coverage can differ from your PrizePicks board.')
+        st.caption(f'Loads standard {platform} lines from The Odds API for the selected upcoming games and markets. Feed coverage can differ from your {platform} board.')
     else:
-        st.caption('Upload one or more CSVs. Every imported PrizePicks line stays visible.')
+        st.caption(f'Upload one or more CSVs. Every imported {platform} line stays visible.')
     template = pd.DataFrame(columns=['sport', 'event', 'player', 'market', 'line', 'platform'])
     uploads = []
     if not live_board:
-        st.download_button('Download PrizePicks CSV template', template.to_csv(index=False),
-                           'prizepicks_template.csv', mime='text/csv')
-        uploads = st.file_uploader('Upload current PrizePicks lines', type='csv',
-                                   accept_multiple_files=True, key='prizepicks_boards')
+        st.download_button(f'Download {platform} CSV template', template.to_csv(index=False),
+                           f'{platform.lower()}_template.csv', mime='text/csv')
+        uploads = st.file_uploader(f'Upload current {platform} lines', type='csv',
+                                   accept_multiple_files=True, key=f'{platform.lower()}_boards')
     boards = []
     board_ids = []
     for upload in uploads:
@@ -2813,7 +2817,7 @@ with best:
         frame = frame.dropna(subset=['sport', 'event', 'player', 'market'])
         frame = frame[frame['platform'].astype(str).str.strip().str.casefold().eq('prizepicks')]
         if frame.empty:
-            st.info(f'{upload.name} has no valid PrizePicks lines.')
+            st.info(f'{upload.name} has no valid {platform} lines.')
             continue
         boards.append(frame[template.columns])
         board_ids.append(sha256(upload.getvalue()).hexdigest())
@@ -2821,9 +2825,10 @@ with best:
     requested_sport = st.query_params.get('sport')
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS,
                              index=ALL_SPORTS.index(requested_sport) if requested_sport in ALL_SPORTS else 0)
-    show_cs2_review(pick_sport)
-    show_nba_review(pick_sport)
-    show_supplemental_sport_board(pick_sport)
+    if platform == 'PrizePicks':
+        show_cs2_review(pick_sport)
+        show_nba_review(pick_sport)
+    show_supplemental_sport_board(pick_sport, platform)
     with st.expander(f'{pick_sport} research sources'):
         show_research_links(pick_sport)
     if pick_sport in ('NFL', 'CFB'):
@@ -2836,20 +2841,20 @@ with best:
         for column in ['sport', 'event', 'player', 'market']:
             identity[column] = identity[column].astype(str).str.strip().str.casefold()
         all_lines = all_lines.loc[~identity.duplicated()]
-        st.caption(f'{len(all_lines)} unique PrizePicks lines across all uploads.')
+        st.caption(f'{len(all_lines)} unique {platform} lines across all uploads.')
         with st.expander('View every imported line'):
             st.dataframe(all_lines, hide_index=True, use_container_width=True)
         board = all_lines[identity.loc[all_lines.index, 'sport'].eq(pick_sport.casefold())]
 
     if pick_sport not in PICK_MARKETS:
         if not board.empty:
-            show_best_picks_board(board, pick_sport, (pick_sport, tuple(board_ids)))
+            show_best_picks_board(board, pick_sport, (platform, pick_sport, tuple(board_ids)), platform)
         st.info(f'Automated sportsbook comparisons for {pick_sport} are pending.')
     else:
         allowed_markets = PICK_MARKETS[pick_sport].split(',')
         st.caption(f'Markets scanned for {pick_sport}: {", ".join(allowed_markets)}.')
         if not live_board:
-            st.caption('Use Away Team at Home Team for event and PrizePicks for platform.')
+            st.caption(f'Use Away Team at Home Team for event and {platform} for platform.')
         if boards and board.empty:
             st.info(f'The uploads contain no {pick_sport} lines.')
         event_limit = st.slider('Maximum games to scan', min_value=1, max_value=12, value=1)
@@ -2859,22 +2864,25 @@ with best:
         if live_board:
             scan_markets = st.multiselect('Markets to load', allowed_markets, default=allowed_markets[:1])
             compare = st.checkbox('Compare with sportsbooks', value=True,
-                                  help='Turn off to load PrizePicks lines at half the maximum credit cost.')
+                                  help=f'Turn off to load {platform} lines at half the maximum credit cost.')
             if compare:
                 environment = st.checkbox('Include game spread and total',
                                           help='Uses extra credits and screens large spreads for blowout risk.')
-            st.caption('Line changes use the first PrizePicks line saved by Edge Lab.')
+            if platform == 'PrizePicks':
+                st.caption('Line changes use the first PrizePicks line saved by Edge Lab.')
+            else:
+                st.caption('Underdog supports the same available research and comparisons. Automatic report-card tracking and line history are currently available for PrizePicks.')
         regions = (f'{pick_region},us_dfs' if compare else 'us_dfs') if live_board else pick_region
         credits = event_limit * (len(scan_markets) + 2 * int(environment)) * len(regions.split(','))
         st.caption(f'Maximum cost: {credits} provider credits. Identical requests can reuse cached odds for five minutes.')
-        pick_scope = (key_id, pick_sport, regions, live_board, tuple(board_ids), event_limit,
+        pick_scope = (key_id, platform, pick_sport, regions, live_board, tuple(board_ids), event_limit,
                       tuple(scan_markets), environment)
-        action = 'Load PrizePicks lines' if live_board else 'Compare PrizePicks lines'
+        action = f'Load {platform} lines' if live_board else f'Compare {platform} lines'
         if st.button(action, disabled=not api_key or not scan_markets or (not live_board and board.empty)):
             st.session_state.pop('prizepicks_matches', None)
             try:
-                with st.spinner('Comparing PrizePicks lines…'):
-                    result = (load_live_prizepicks(api_key, pick_sport, regions, event_limit, scan_markets, compare, environment)
+                with st.spinner(f'Comparing {platform} lines…'):
+                    result = (load_live_prizepicks(api_key, pick_sport, regions, event_limit, scan_markets, compare, environment, platform)
                               if live_board else
                               scan_top_picks(api_key, pick_sport, pick_region, board, event_limit))
                 st.session_state['prizepicks_matches'] = (pick_scope, result)
@@ -2886,22 +2894,22 @@ with best:
         if not live_board and not board.empty and (
             not saved or saved[0] != pick_scope
         ):
-            show_best_picks_board(board, pick_sport, pick_scope)
+            show_best_picks_board(board, pick_sport, pick_scope, platform)
         if saved and saved[0] == pick_scope:
             picks, checked, targeted, issues = saved[1]
             st.caption(f'{checked} of {targeted} selected games checked.')
             for issue in issues:
                 st.warning(issue)
             if picks.empty:
-                st.info('No PrizePicks lines returned for the selected games and markets.')
+                st.info(f'No {platform} lines returned for the selected games and markets.')
             else:
                 matched = picks['status'].eq('Matched').sum()
                 if compare:
-                    st.caption(f'{matched} of {len(picks)} PrizePicks lines matched.')
+                    st.caption(f'{matched} of {len(picks)} {platform} lines matched.')
                 else:
-                    st.caption(f'{len(picks)} PrizePicks lines loaded.')
+                    st.caption(f'{len(picks)} {platform} lines loaded.')
                     picks = picks.drop(columns=['side', 'market_estimate_pct', 'comparison_books'])
-                show_best_picks_board(picks, pick_sport, pick_scope)
+                show_best_picks_board(picks.assign(platform=platform), pick_sport, pick_scope, platform)
 
 with tab1:
     st.subheader('Live sportsbook market discovery')
