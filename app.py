@@ -526,11 +526,28 @@ def show_supplemental_sport_board(sport, platform='PrizePicks'):
 
 def show_cs2_review(sport):
     review = st.query_params.get('cs2_review')
-    if sport != 'CS2' or review not in ('2026-11-23', '2026-11-23-pgl', '2026-11-23-pgl50'):
+    if sport != 'CS2' or review not in (
+        '2026-11-23', '2026-11-23-pgl', '2026-11-23-pgl50', '2026-11-24-upcoming',
+    ):
         return
     path = Path(__file__).with_name(f'cs2-review-{review}.json')
     rows = json.loads(path.read_text(encoding='utf-8'))
     report = pd.DataFrame(rows)
+    if review == '2026-11-24-upcoming':
+        st.subheader(f'{len(report)} CS2 prop reviews · Upcoming matches snapshot')
+        starts = pd.to_datetime(report.pop('Start (UTC)'), utc=True)
+        pending = starts.gt(pd.Timestamp.now(tz='UTC'))
+        report['Scheduled start (Pacific)'] = starts.dt.tz_convert('America/Los_Angeles').dt.strftime('%b %d, %I:%M %p')
+        report.loc[~pending, 'Review'] = 'Past scheduled start'
+        st.caption('These are reported PrizePicks lines and historical two-map averages. The review uses a minimum gap of 2 kills or 1.5 headshots for a lean.')
+        st.caption('Pass also covers lines without verified matching history. Matches with no reported PrizePicks lines are absent from the table.')
+        selected = selectable_prop_table(report, 'cs2_upcoming_reviews')
+        if selected is not None:
+            row = report.iloc[selected]
+            st.markdown(f"**{row['Player']} · {row['Market']} · {row['PrizePicks line']:g}**")
+            st.write(f"**{row['Review']}** · {row['Reason']}")
+        st.markdown('[Reported PrizePicks lines](https://pickempartyapp.com/props/cs2) · [Two-map history](https://www.cs2observer.com/props)')
+        return
     if review == '2026-11-23-pgl50':
         st.subheader('50 new CS2 prop reviews · PGL Singapore')
         pending = pd.to_datetime(report['Start (UTC)'], utc=True).gt(pd.Timestamp.now(tz='UTC'))
