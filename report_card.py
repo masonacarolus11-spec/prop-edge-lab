@@ -14,18 +14,28 @@ NBA_BOX_STATS = {
 }
 
 
-def init_report_card(connection):
-    connection.execute(
-        """CREATE TABLE IF NOT EXISTS report_card (
+REPORT_CARD_SCHEMA = """CREATE TABLE IF NOT EXISTS report_card (
             event_id TEXT, player_id INTEGER, market TEXT, sport TEXT NOT NULL,
             player TEXT NOT NULL, event TEXT NOT NULL, kickoff TEXT NOT NULL,
             away TEXT NOT NULL, home TEXT NOT NULL, observed TEXT NOT NULL,
             line REAL NOT NULL, side TEXT NOT NULL, projection REAL,
             injury TEXT, minutes TEXT, books INTEGER, weather TEXT,
             result TEXT NOT NULL DEFAULT 'Pending', actual REAL,
-            PRIMARY KEY (event_id, player_id, market)
+            platform TEXT NOT NULL DEFAULT 'PrizePicks',
+            PRIMARY KEY (event_id, player_id, market, platform)
         )"""
-    )
+
+
+def init_report_card(connection):
+    connection.execute('BEGIN IMMEDIATE')
+    connection.execute(REPORT_CARD_SCHEMA)
+    columns = [row[1] for row in connection.execute('PRAGMA table_info(report_card)')]
+    if 'platform' not in columns:
+        connection.execute('ALTER TABLE report_card RENAME TO report_card_legacy')
+        connection.execute(REPORT_CARD_SCHEMA)
+        fields = ', '.join(columns)
+        connection.execute(f'INSERT INTO report_card ({fields}) SELECT {fields} FROM report_card_legacy')
+        connection.execute('DROP TABLE report_card_legacy')
     connection.execute(
         """CREATE TABLE IF NOT EXISTS pregame_state (
             prop_key TEXT PRIMARY KEY, evidence TEXT NOT NULL
@@ -136,16 +146,16 @@ def observe_pregame_changes(db, observations):
     return latest
 
 
-def save_report_picks(db, rows):
+def save_report_picks(db, rows, platform='PrizePicks'):
     with closing(sqlite3.connect(db)) as connection, connection:
         before = connection.total_changes
         connection.executemany(
             """INSERT INTO report_card (
                 event_id, player_id, market, sport, player, event, kickoff, away, home,
-                observed, line, side, projection, injury, minutes, books, weather
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (event_id, player_id, market) DO NOTHING""",
-            rows,
+                observed, line, side, projection, injury, minutes, books, weather, platform
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (event_id, player_id, market, platform) DO NOTHING""",
+            ((*row, platform) for row in rows),
         )
         return connection.total_changes - before
 

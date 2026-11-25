@@ -1897,7 +1897,7 @@ def pregame_recheck(board, sport):
     return reviewed
 
 
-def track_model_scan(board, sport):
+def track_model_scan(board, sport, platform='PrizePicks'):
     observed = pd.Timestamp.now(tz='UTC')
     labels = {'Model lean: More': 'More', 'Model lean: Less': 'Less'}
     snapshots = []
@@ -1921,8 +1921,8 @@ def track_model_scan(board, sport):
             row.get('Minutes sensitivity'), row.get('comparison_books'), row.get('Weather review'),
         ))
     if snapshots:
-        save_report_picks(DB, snapshots)
-        st.caption(f'{len(snapshots)} eligible pregame leans on this board. Pick Report Card keeps the first saved line for each player, game and stat.')
+        save_report_picks(DB, snapshots, platform)
+        st.caption(f'{len(snapshots)} eligible pregame leans on this board. Pick Report Card keeps the first saved line for each site, player, game and stat.')
 
 
 def fetch_nba_box(game_id):
@@ -2062,7 +2062,7 @@ def nba_pick_watch(picks, key):
         closing = pd.read_sql_query(
             """SELECT p.player, p.market, p.side, p.line AS tracked_line, q.line AS late_line,
                       q.checked, q.updated
-               FROM closing_quotes q JOIN report_card p USING(event_id, player_id, market)
+               FROM closing_quotes q JOIN (SELECT * FROM report_card WHERE platform='PrizePicks') p USING(event_id, player_id, market)
                ORDER BY q.checked DESC""", conn,
         )
     if not closing.empty:
@@ -2173,7 +2173,7 @@ def show_live_nba_picks(picks, state, alerts):
                 graded = grade_nba_pick(box, pick)
                 result = graded[0] if graded else 'Unverified'
                 if graded and pick['result'] == 'Pending':
-                    grades.append((*graded, pick['event_id'], pick['player_id'], pick['market']))
+                    grades.append((*graded, pick['event_id'], pick['player_id'], pick['market'], pick['platform']))
             else:
                 result = grade_score(status, pick['side'], value, pick['line']) if isinstance(value, (int, float)) else 'Awaiting stat'
             identity = pick['event_id'], pick['player_id'], pick['market']
@@ -2200,7 +2200,7 @@ def store_report_grades(results):
     with sqlite3.connect(DB) as conn:
         cursor = conn.executemany(
             """UPDATE report_card SET result=?, actual=?
-               WHERE event_id=? AND player_id=? AND market=? AND result='Pending'""", results,
+               WHERE event_id=? AND player_id=? AND market=? AND platform=? AND result='Pending'""", results,
         )
         return cursor.rowcount
 
@@ -2229,7 +2229,7 @@ def refresh_report_grades(picks, panda_key=''):
                         int(pick['player_id']), pick['market'], pick['line'], pick['side'],
                     )
                     if outcome is not None:
-                        results.append((*outcome, pick['event_id'], pick['player_id'], pick['market']))
+                        results.append((*outcome, pick['event_id'], pick['player_id'], pick['market'], pick['platform']))
                 continue
             if sport == 'CS2':
                 if not panda_key:
@@ -2241,7 +2241,7 @@ def refresh_report_grades(picks, panda_key=''):
                     outcome = grade_cs2_pick(payload, match_id, player_id, pick['market'],
                                              pick['line'], pick['side'])
                     if outcome is not None:
-                        results.append((*outcome, pick['event_id'], pick['player_id'], pick['market']))
+                        results.append((*outcome, pick['event_id'], pick['player_id'], pick['market'], pick['platform']))
                 continue
             if sport == 'NFL':
                 football_season = date.year - int(date.month < 7)
@@ -2261,7 +2261,7 @@ def refresh_report_grades(picks, panda_key=''):
                         actual = pd.to_numeric(player.iloc[0][stat], errors='coerce')
                         if pd.notna(actual) and np.isfinite(actual):
                             result = grade_score(3, pick['side'], actual, pick['line'])
-                            results.append((result, float(actual), pick['event_id'], pick['player_id'], pick['market']))
+                            results.append((result, float(actual), pick['event_id'], pick['player_id'], pick['market'], pick['platform']))
                 continue
             if season not in season_logs:
                 season_logs[season] = load_nba_game_log(season)
@@ -2276,7 +2276,7 @@ def refresh_report_grades(picks, panda_key=''):
             for pick in group.to_dict('records'):
                 outcome = grade_nba_pick(game, pick)
                 if outcome is not None:
-                    results.append((*outcome, pick['event_id'], pick['player_id'], pick['market']))
+                    results.append((*outcome, pick['event_id'], pick['player_id'], pick['market'], pick['platform']))
         except (requests.RequestException, ValueError, KeyError, TypeError):
             continue
     return store_report_grades(results)
@@ -2284,22 +2284,27 @@ def refresh_report_grades(picks, panda_key=''):
 
 def show_report_card(key):
     st.subheader('Pick Report Card')
-    st.caption('Tracks NBA and NFL player props, CS2 map kills, and Dota 2 map kills, deaths, assists and last hits.')
+    st.caption('Automatic box-score grading covers supported NBA, NFL, CS2 and Dota 2 props. Paper Tracker results can be entered manually for any sport or site.')
     with sqlite3.connect(DB) as conn:
         picks = pd.read_sql_query('SELECT * FROM report_card ORDER BY kickoff, observed', conn)
         changes = pd.read_sql_query(
             'SELECT observed, player, event, market, field, previous, current '
             'FROM pregame_changes ORDER BY observed DESC, id DESC', conn,
         )
+        manual = pd.read_sql_query(
+            "SELECT sport, platform, player, event, market, line, side, actual, created_at AS observed, "
+            "CASE status WHEN 'Win' THEN 'Hit' WHEN 'Loss' THEN 'Miss' ELSE status END AS result "
+            "FROM picks", conn,
+        )
     with st.expander('Pregame change history', expanded=not changes.empty):
         if changes.empty:
             st.caption('Compare the same upcoming PrizePicks prop again after a line or injury report updates.')
         else:
             st.dataframe(changes, hide_index=True)
-    if picks.empty:
-        st.info('No tracked picks yet. Run an NBA or NFL comparison or track a paper pick from the CS2 or Dota 2 scoreboard.')
+    if picks.empty and manual.empty:
+        st.info('No tracked picks yet. Save a paper prediction in Evaluate prop or run a supported Best Picks scan.')
         return
-    watchable = picks.loc[picks['sport'].isin(['NBA', 'NFL'])]
+    watchable = picks.loc[picks['sport'].isin(['NBA', 'NFL']) & picks['platform'].eq('PrizePicks')]
     if not watchable.empty:
         nba_pick_watch(watchable, key)
     panda_key = st.session_state.get('panda_session_token') or configured_panda_key()
@@ -2308,35 +2313,46 @@ def show_report_card(key):
             st.caption('Enter your PandaScore token on the CS2 or Dota 2 scoreboard to grade esports picks.')
         else:
             st.caption('Missing, incomplete or forfeited map results remain pending.')
-    if st.button('Check final box scores'):
+    if st.button('Check final box scores', disabled=picks.empty):
         with st.spinner('Checking final results…'):
             count = refresh_report_grades(picks, panda_key)
         with sqlite3.connect(DB) as conn:
             picks = pd.read_sql_query('SELECT * FROM report_card ORDER BY kickoff, observed', conn)
         st.info(f'{count} picks graded. Unverified results stay pending.')
-    counts = picks['result'].value_counts()
+    report = pd.concat(
+        [picks.assign(Grading='Box score'), manual.assign(Grading='Manual')],
+        ignore_index=True,
+    )
+    report['platform'] = report['platform'].fillna('Unknown')
+    filters = st.columns(3)
+    shown = report
+    for column, field, label in zip(filters, ('sport', 'platform', 'market'), ('Sport', 'Site', 'Stat')):
+        options = ['All', *sorted(shown[field].dropna().unique())]
+        selection = column.selectbox(label, options, key=f'report_filter:{field}')
+        if selection != 'All':
+            shown = shown.loc[shown[field].eq(selection)]
+    counts = shown['result'].value_counts()
     decisions = counts.get('Hit', 0) + counts.get('Miss', 0)
     columns = st.columns(4)
-    columns[0].metric('Tracked', len(picks))
+    columns[0].metric('Tracked', len(shown))
     columns[1].metric('Hits / misses', f"{counts.get('Hit', 0)} / {counts.get('Miss', 0)}")
     columns[2].metric('Hit rate', f"{counts.get('Hit', 0) / decisions:.1%}" if decisions else '—')
     columns[3].metric('Pending', counts.get('Pending', 0))
     st.caption(f"Pushes: {counts.get('Push', 0)} · Voids: {counts.get('Void', 0)}. Hit rate uses hits and misses only.")
-    market = st.selectbox('Filter by stat', list(dict.fromkeys(
-        ['All stats', *NBA_STAT_COLUMNS, *NFL_STATS, *MAP_MARKETS, *DOTA_MARKETS],
-    )))
-    shown = picks if market == 'All stats' else picks.loc[picks['market'].eq(market)]
-    graded = shown.loc[shown['result'].isin(['Hit', 'Miss'])]
-    if not graded.empty:
-        breakdown = graded.assign(
-            Hit=graded['result'].eq('Hit'),
-            Minutes=graded['minutes'].fillna('Typical range'),
-        ).groupby(['market', 'Minutes'])['Hit'].agg(Decisions='size', Hits='sum').reset_index()
-        breakdown['Hit rate (%)'] = (100 * breakdown['Hits'] / breakdown['Decisions']).round(1)
-        st.dataframe(breakdown, hide_index=True)
-    st.dataframe(shown[['sport', 'player', 'event', 'market', 'line', 'side', 'projection', 'actual',
-                        'result', 'observed', 'injury', 'minutes', 'books']], hide_index=True)
-    st.download_button('Download report card', picks.to_csv(index=False), 'pick-report-card.csv', mime='text/csv')
+    if not shown.empty:
+        breakdown = pd.crosstab(
+            [shown['sport'], shown['platform'], shown['market']], shown['result'],
+        ).reindex(columns=['Hit', 'Miss', 'Push', 'Void', 'Pending'], fill_value=0)
+        breakdown['Decisions'] = breakdown['Hit'] + breakdown['Miss']
+        breakdown['Hit rate (%)'] = (
+            100 * breakdown['Hit'] / breakdown['Decisions'].replace(0, np.nan)
+        ).round(1)
+        st.dataframe(breakdown.reset_index(), hide_index=True)
+    st.dataframe(shown[['sport', 'platform', 'Grading', 'player', 'event', 'market',
+                        'line', 'side', 'projection', 'actual', 'result', 'observed',
+                        'injury', 'minutes', 'books']], hide_index=True)
+    st.download_button('Download filtered report card', shown.to_csv(index=False),
+                       'pick-report-card.csv', mime='text/csv')
 
 
 def describe_board_coverage(row, now):
@@ -2361,8 +2377,8 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
     if platform == 'PrizePicks':
         full_board = pregame_recheck(full_board, sport)
-        if sport in adapters:
-            track_model_scan(full_board, sport)
+    if sport in adapters:
+        track_model_scan(full_board, sport, platform)
     st.subheader(f'{platform} · {sport} prop review')
     st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
     explanations = [pick_evaluation(row)[:2] for _, row in full_board.iterrows()]
