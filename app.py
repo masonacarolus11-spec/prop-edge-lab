@@ -2460,15 +2460,16 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
     show_board_research(full_board, sport, board_scope, selected)
 
 
-def show_sleeper_feed(sport):
+def show_sleeper_feed(sport, slate_date=None):
     if sport not in SLEEPER_LEAGUES:
         st.info(f'The connected Sleeper feed does not document {sport} coverage. CSV import is available.')
         return
     token = st.text_input('Apify API token', type='password', key='sleeper_apify_token').strip()
     st.caption(f'Up to {MAX_ROWS} upcoming lines and ${MAX_CHARGE_USD:.2f} in Apify usage per refresh. No Odds API credits.')
     boards = st.session_state.setdefault('sleeper_feed_boards', {})
-    scope = (sha256(token.encode()).hexdigest(), sport)
-    if st.button('Load Sleeper lines', disabled=not token):
+    scope = (sha256(token.encode()).hexdigest(), sport, slate_date)
+    action = 'Refresh Sleeper lines' if scope in boards else 'Load Sleeper lines'
+    if st.button(action, disabled=not token):
         now = dt.datetime.now(dt.timezone.utc)
         attempts = st.session_state.setdefault('sleeper_feed_attempts', {})
         last = attempts.get(scope)
@@ -2478,7 +2479,7 @@ def show_sleeper_feed(sport):
             attempts[scope] = now
             try:
                 with st.spinner('Loading Sleeper lines from Apify…'):
-                    rows = fetch_sleeper_rows(token, sport)
+                    rows = fetch_sleeper_rows(token, sport, slate_date)
                 boards[scope] = (now, rows)
             except requests.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else None
@@ -2749,17 +2750,22 @@ def event_label(event):
     return f"{event.get('away_team') or '?'} at {event.get('home_team') or '?'}"
 
 
-def scan_top_picks(key, sport, regions, board, event_limit):
-    events = fetch_events(key, SPORTS[sport])
-    now = dt.datetime.now(dt.timezone.utc)
+def slate_events(events, now, slate_date=None):
+    """Keep future events on the selected Pacific calendar day."""
+    zone = ZoneInfo('America/Los_Angeles')
     upcoming = []
     for event in events:
-        try:
-            start = dt.datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-        except (KeyError, ValueError, AttributeError):
-            continue
-        if start.tzinfo and start > now:
+        start = pd.to_datetime(event.get('commence_time'), utc=True, errors='coerce')
+        if (pd.notna(start) and start > now and
+                (slate_date is None or start.tz_convert(zone).date() == slate_date)):
             upcoming.append((start, event))
+    return sorted(upcoming, key=lambda item: (item[0], item[1]['id']))
+
+
+def scan_top_picks(key, sport, regions, board, event_limit, slate_date=None):
+    events = fetch_events(key, SPORTS[sport])
+    now = dt.datetime.now(dt.timezone.utc)
+    upcoming = slate_events(events, now, slate_date)
     board_events = set(board['event'].str.strip().str.casefold())
     upcoming = [
         (start, event) for start, event in upcoming
@@ -2852,18 +2858,11 @@ def compare_live_event(data, event, markets, platform='PrizePicks'):
     )
 
 
-def load_live_prizepicks(key, sport, regions, event_limit, markets, compare, environment=False, platform='PrizePicks'):
+def load_live_prizepicks(key, sport, regions, event_limit, markets, compare, environment=False,
+                        platform='PrizePicks', slate_date=None):
     events = fetch_events(key, SPORTS[sport])
     now = dt.datetime.now(dt.timezone.utc)
-    upcoming = []
-    for event in events:
-        try:
-            start = dt.datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-        except (KeyError, ValueError, AttributeError):
-            continue
-        if start.tzinfo and start > now:
-            upcoming.append((start, event))
-    selected = sorted(upcoming, key=lambda item: (item[0], item[1]['id']))[:event_limit]
+    selected = slate_events(events, now, slate_date)[:event_limit]
 
     results, issues = [], []
     requested = [*markets, 'spreads', 'totals'] if environment else markets
@@ -2929,6 +2928,13 @@ with st.sidebar:
 best,tab1,tab2,tab3,tab4,research,report_card=st.tabs(['Best picks', '🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup','Research sources','Pick Report Card'])
 key_id = sha256(api_key.encode()).hexdigest()
 with best:
+    st.subheader('Daily Slate')
+    pacific_today = dt.datetime.now(ZoneInfo('America/Los_Angeles')).date()
+    slate_date = st.date_input(
+        'Slate date (Pacific time)', value=pacific_today, min_value=pacific_today,
+        max_value=pacific_today + dt.timedelta(days=1),
+    )
+    st.caption('Feed scans cover upcoming games on the selected day. CSV lines stay visible as uploaded.')
     platform = st.selectbox('Pick site', ['PrizePicks', 'Underdog', 'Sleeper'])
     st.subheader(f'{platform} board by sport')
     if platform == 'Sleeper':
@@ -2997,7 +3003,7 @@ with best:
             st.info(f'The uploads contain no {platform} lines for {pick_sport}.')
 
     if sleeper_feed:
-        show_sleeper_feed(pick_sport)
+        show_sleeper_feed(pick_sport, slate_date)
     elif pick_sport not in PICK_MARKETS:
         if not board.empty:
             show_best_picks_board(board, pick_sport, (platform, pick_sport, tuple(board_ids)), platform)
@@ -3013,7 +3019,7 @@ with best:
         scan_markets = allowed_markets
         if live_board:
             auto_load = st.checkbox('Automatically load the first board', value=True,
-                                    help='Loads one game and one market per site and sport in this session. Larger scans use the button.')
+                                    help='Loads one game and one market for today per sport in this session. Other boards and refreshes use the button.')
             scan_markets = st.multiselect('Markets to load', allowed_markets, default=allowed_markets[:1])
             compare = st.checkbox('Compare with sportsbooks', value=True,
                                   help=f'Turn off to load {platform} lines at half the maximum credit cost.')
@@ -3026,43 +3032,49 @@ with best:
                 st.caption('Underdog supports the same available research and comparisons. Automatic report-card tracking and line history are currently available for PrizePicks.')
         regions = (f'{pick_region},us_dfs' if compare else 'us_dfs') if live_board else pick_region
         credits = event_limit * (len(scan_markets) + 2 * int(environment)) * len(regions.split(','))
-        st.caption(f'Maximum cost: {credits} provider credits. Identical requests can reuse cached odds for five minutes.')
+        st.caption(f'Up to {credits} Odds API credits per scan. Viewing saved boards uses no credits. Identical requests can reuse cached odds for five minutes.')
         pick_scope = (key_id, platform, pick_sport, regions, live_board, tuple(board_ids), event_limit,
-                      tuple(scan_markets), environment)
-        action = f'Load {platform} lines' if live_board else f'Compare {platform} lines'
+                      tuple(scan_markets), environment, slate_date)
         ready = bool(api_key and scan_markets and (live_board or not board.empty))
-        boards_by_scope = st.session_state.setdefault('best_picks_results', {})
-        attempted = st.session_state.setdefault('best_picks_initial_scans', set())
-        initial_scope = key_id, platform, pick_sport
+        boards_by_scope = st.session_state.setdefault('daily_slate_results', {})
+        attempted = st.session_state.setdefault('daily_slate_initial_scans', set())
+        initial_scope = key_id, pick_sport, slate_date
+        action = (f'Refresh {platform} lines' if pick_scope in boards_by_scope else
+                  f'Load {platform} lines') if live_board else f'Compare {platform} lines'
         saved_review_open = (platform == 'PrizePicks' and
                              any(name in st.query_params for name in ('nba_review', 'cs2_review')))
         initial_scan = (
             live_board and auto_load and ready and event_limit == 1 and len(scan_markets) == 1
             and not environment and initial_scope not in attempted and not saved_review_open
+            and slate_date == pacific_today
         )
         if st.button(action, disabled=not ready) or initial_scan:
             if live_board:
                 attempted.add(initial_scope)
             try:
                 with st.spinner(f'Comparing {platform} lines…'):
-                    result = (load_live_prizepicks(api_key, pick_sport, regions, event_limit, scan_markets, compare, environment, platform)
+                    result = (load_live_prizepicks(api_key, pick_sport, regions, event_limit, scan_markets,
+                                                 compare, environment, platform, slate_date)
                               if live_board else
-                              scan_top_picks(api_key, pick_sport, pick_region, board, event_limit))
-                boards_by_scope[pick_scope] = result
+                              scan_top_picks(api_key, pick_sport, pick_region, board, event_limit, slate_date))
+                boards_by_scope[pick_scope] = (pd.Timestamp.now(tz='UTC'), result)
             except ProviderError as exc:
                 st.error(str(exc))
         if not api_key:
             st.info('Enter an Odds API key to compare lines.')
         saved = boards_by_scope.get(pick_scope)
-        if not live_board and not board.empty and (saved is None or saved[0].empty):
+        if not live_board and not board.empty and (saved is None or saved[1][0].empty):
             show_best_picks_board(board, pick_sport, pick_scope, platform)
         if saved is not None:
-            picks, checked, targeted, issues = saved
-            st.caption(f'{checked} of {targeted} selected games checked.')
+            loaded, (picks, checked, targeted, issues) = saved
+            st.caption(f'Last scan {loaded.tz_convert("America/Los_Angeles"):%b %d at %I:%M %p PT} · {checked} of {targeted} selected games checked.')
             for issue in issues:
                 st.warning(issue)
+            if live_board and not picks.empty:
+                starts = pd.to_datetime(picks['starts_utc'], utc=True, errors='coerce')
+                picks = picks.loc[starts.gt(pd.Timestamp.now(tz='UTC'))]
             if picks.empty:
-                st.info(f'No {platform} lines returned for the selected games and markets.')
+                st.info(f'No upcoming {platform} lines in this scan for the selected day and markets.')
             else:
                 matched = picks['status'].eq('Matched').sum()
                 if compare:

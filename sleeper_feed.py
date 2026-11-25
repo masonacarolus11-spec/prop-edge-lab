@@ -1,6 +1,7 @@
 """Import an explicitly requested Sleeper board from the Apify community actor."""
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from math import isfinite
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -12,6 +13,7 @@ MAX_ROWS = 200
 MAX_CHARGE_USD = 0.05
 ACTOR_URL = ('https://api.apify.com/v2/acts/logiover~sleeper-picks-scraper/'
              'run-sync-get-dataset-items')
+PACIFIC = ZoneInfo('America/Los_Angeles')
 MARKETS = {
     'points': 'player_points', 'rebounds': 'player_rebounds', 'assists': 'player_assists',
     'passing yards': 'player_pass_yds', 'pass yards': 'player_pass_yds',
@@ -20,7 +22,7 @@ MARKETS = {
 }
 
 
-def normalize_sleeper_rows(payload, sport, now):
+def normalize_sleeper_rows(payload, sport, now, slate_date=None):
     if not isinstance(payload, list):
         raise ValueError('Expected an Apify dataset list.')
     rows = {}
@@ -40,6 +42,8 @@ def normalize_sleeper_rows(payload, sport, now):
             continue
         if not start.tzinfo or start <= now or not isfinite(line) or isinstance(item['lineScore'], bool):
             continue
+        if slate_date is not None and start.astimezone(PACIFIC).date() != slate_date:
+            continue
         if not isinstance(player, str) or not player.strip() or not isinstance(stat, str) or not stat.strip():
             continue
         away, home = item.get('awayTeam'), item.get('homeTeam')
@@ -55,13 +59,18 @@ def normalize_sleeper_rows(payload, sport, now):
     return list(rows.values())
 
 
-def fetch_sleeper_rows(token, sport):
+def fetch_sleeper_rows(token, sport, slate_date=None):
+    window = {'startsWithinHours': 48}
+    if slate_date is not None:
+        start = datetime.combine(slate_date, time.min, PACIFIC).astimezone(timezone.utc)
+        end = datetime.combine(slate_date + timedelta(days=1), time.min, PACIFIC).astimezone(timezone.utc)
+        window = {'startDateFrom': start.date().isoformat(),
+                  'startDateTo': (end - timedelta(seconds=1)).date().isoformat()}
     response = requests.post(
         ACTOR_URL, headers={'Authorization': f'Bearer {token}'},
         params={'maxTotalChargeUsd': MAX_CHARGE_USD, 'maxItems': MAX_ROWS, 'timeout': 60},
-        json={'leagues': [SLEEPER_LEAGUES[sport]], 'maxItems': MAX_ROWS,
-              'rowShape': 'line', 'startsWithinHours': 48},
+        json={'leagues': [SLEEPER_LEAGUES[sport]], 'maxItems': MAX_ROWS, 'rowShape': 'line', **window},
         timeout=(5, 70),
     )
     response.raise_for_status()
-    return normalize_sleeper_rows(response.json(), sport, datetime.now(timezone.utc))
+    return normalize_sleeper_rows(response.json(), sport, datetime.now(timezone.utc), slate_date)
