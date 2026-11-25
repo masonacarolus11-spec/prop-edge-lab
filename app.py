@@ -26,8 +26,8 @@ from sleeper_feed import MAX_CHARGE_USD, MAX_ROWS, SLEEPER_LEAGUES, fetch_sleepe
 from dota_props import (DOTA_MAPS, DOTA_MARKETS, DOTA_STATS, dota_final_game, dota_final_match,
                         dota_grade, dota_history, dota_projection, search_dota_players)
 
-st.set_page_config(page_title='Edge Lab', page_icon='📈', layout='wide')
-st.title('📈 Edge Lab')
+st.set_page_config(page_title='Vantage Sports', page_icon='📈', layout='wide')
+st.title('📈 Vantage Sports')
 st.caption('Research prototype • paper testing only • no automatic bets • no guaranteed returns')
 DB = Path(os.getenv('PROP_DB', 'prop_scanner.sqlite'))
 SPORTS = {sport: source.odds_key for sport, source in SOURCES.items() if source.odds_key}
@@ -543,7 +543,7 @@ def show_cs2_review(sport):
     elif review == '2026-11-23-pgl':
         st.subheader('10 new CS2 prop reviews · PGL Singapore')
         st.caption('November 23 Pacific · Map 1 kills · 5 More leans, 2 Less leans, 3 passes.')
-        st.caption('Lines and projections are from the 17:06 UTC source snapshot. Edge Lab marks Pass when the projection is less than one kill from the line or the source flags a disagreement.')
+        st.caption('Lines and projections are from the 17:06 UTC source snapshot. Vantage Sports marks Pass when the projection is less than one kill from the line or the source flags a disagreement.')
     else:
         st.subheader('10 CS2 prop reviews · November 23')
         st.caption('One pregame lean and nine completed-map results. The completed rows compare published lines with final kills.')
@@ -1476,7 +1476,7 @@ def nfl_weather(venue, roof, kickoff):
     now = dt.datetime.now(dt.timezone.utc)
     if not now <= kickoff < now + dt.timedelta(days=7):
         return {'Weather review': 'Kickoff outside forecast window'}
-    headers = {'User-Agent': 'Edge Lab (github.com/masonacarolus11-spec/prop-edge-lab)',
+    headers = {'User-Agent': 'Vantage Sports (github.com/masonacarolus11-spec/prop-edge-lab)',
                'Accept': 'application/geo+json'}
     try:
         with requests.Session() as session:
@@ -3021,7 +3021,7 @@ with best:
                 environment = st.checkbox('Include game spread and total',
                                           help='Uses extra credits and screens large spreads for blowout risk.')
             if platform == 'PrizePicks':
-                st.caption('Line changes use the first PrizePicks line saved by Edge Lab.')
+                st.caption('Line changes use the first PrizePicks line saved by Vantage Sports.')
             else:
                 st.caption('Underdog supports the same available research and comparisons. Automatic report-card tracking and line history are currently available for PrizePicks.')
         regions = (f'{pick_region},us_dfs' if compare else 'us_dfs') if live_board else pick_region

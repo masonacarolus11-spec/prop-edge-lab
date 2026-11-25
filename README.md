@@ -1,4 +1,4 @@
-# Edge Lab — $0 prototype
+# Vantage Sports — $0 prototype
 
 A Streamlit research app with live odds-provider integration (when supported by the user's API plan), no-vig sportsbook consensus, manual PrizePicks/Underdog CSV import, distribution-based probability estimation, and paper-pick tracking.
 

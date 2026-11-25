@@ -1,4 +1,4 @@
-"""Edge Lab: explicit, auditable research-source registry.
+"""Vantage Sports: explicit, auditable research-source registry.
 
 A source being listed does not mean that it is integrated or that live stats
 are available. No player performance data is invented.
