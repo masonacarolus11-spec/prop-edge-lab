@@ -22,6 +22,7 @@ from sport_boards import BOARD_SOURCES, TEAM_MODELS, load_sport_board, project_t
 from cs2_props import (MAP_MARKETS, cs2_projection, cs2_start, grade_cs2_pick,
                        load_cs2_history, load_cs2_match_stats, search_cs2_players)
 from nba_rebounds import missed_shot_profiles
+from sleeper_feed import MAX_CHARGE_USD, MAX_ROWS, SLEEPER_LEAGUES, fetch_sleeper_rows
 from dota_props import (DOTA_MAPS, DOTA_MARKETS, DOTA_STATS, dota_final_game, dota_final_match,
                         dota_grade, dota_history, dota_projection, search_dota_players)
 
@@ -2377,6 +2378,48 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks'):
     show_board_research(full_board, sport, board_scope, selected)
 
 
+def show_sleeper_feed(sport):
+    if sport not in SLEEPER_LEAGUES:
+        st.info(f'The connected Sleeper feed does not document {sport} coverage. CSV import is available.')
+        return
+    token = st.text_input('Apify API token', type='password', key='sleeper_apify_token').strip()
+    st.caption(f'Up to {MAX_ROWS} upcoming lines and ${MAX_CHARGE_USD:.2f} in Apify usage per refresh. No Odds API credits.')
+    boards = st.session_state.setdefault('sleeper_feed_boards', {})
+    scope = (sha256(token.encode()).hexdigest(), sport)
+    if st.button('Load Sleeper lines', disabled=not token):
+        now = dt.datetime.now(dt.timezone.utc)
+        attempts = st.session_state.setdefault('sleeper_feed_attempts', {})
+        last = attempts.get(scope)
+        if last and (now - last).total_seconds() < 300:
+            st.info('A refresh was requested within the last five minutes. Any saved results are shown below.')
+        else:
+            attempts[scope] = now
+            try:
+                with st.spinner('Loading Sleeper lines from Apify…'):
+                    rows = fetch_sleeper_rows(token, sport)
+                boards[scope] = (now, rows)
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status in (401, 403):
+                    st.error('Apify denied access. Check the token and account permissions.')
+                elif status in (402, 429):
+                    st.error('Apify reported a usage or request limit.')
+                else:
+                    st.error('Apify could not complete the Sleeper run. Check the run in Apify Console.')
+            except (requests.RequestException, ValueError):
+                st.error('Sleeper data could not be verified. Check the run in Apify Console before refreshing.')
+    if scope not in boards:
+        return
+    fetched, rows = boards[scope]
+    st.caption(f'Board requested {fetched:%Y-%m-%d %H:%M UTC}.')
+    now = dt.datetime.now(dt.timezone.utc)
+    active = [row for row in rows if dt.datetime.fromisoformat(row['starts_utc']) > now]
+    if not active:
+        st.info(f'No verified upcoming standard Sleeper lines returned for {sport}.')
+        return
+    show_best_picks_board(pd.DataFrame(active), sport, ('sleeper_feed', sport, fetched), 'Sleeper')
+
+
 def show_board_research(picks, sport, board_scope, selected_index=None):
     with st.expander('Research a line on this board'):
         st.caption('Add your own research to a board line. Saved reviews appear here for this session.')
@@ -2805,18 +2848,18 @@ with best:
     platform = st.selectbox('Pick site', ['PrizePicks', 'Underdog', 'Sleeper'])
     st.subheader(f'{platform} board by sport')
     if platform == 'Sleeper':
-        source_mode = 'Upload CSVs'
-        st.info('Sleeper lines are imported by CSV. The Odds API does not list a Sleeper feed.')
+        source_mode = st.radio('Sleeper line source', ['Load with Apify', 'Upload CSVs'], horizontal=True)
     else:
         source_mode = st.radio(f'{platform} line source', ['Load from feed', 'Upload CSVs'], horizontal=True)
     live_board = source_mode == 'Load from feed'
+    sleeper_feed = source_mode == 'Load with Apify'
     if live_board:
         st.caption(f'Loads standard {platform} lines from The Odds API for the selected upcoming games and markets. Feed coverage can differ from your {platform} board.')
-    else:
+    elif not sleeper_feed:
         st.caption(f'Upload one or more CSVs. Every imported {platform} line stays visible.')
     template = pd.DataFrame(columns=['sport', 'event', 'player', 'market', 'line', 'platform'])
     uploads = []
-    if not live_board:
+    if not live_board and not sleeper_feed:
         st.download_button(f'Download {platform} CSV template', template.to_csv(index=False),
                            f'{platform.lower()}_template.csv', mime='text/csv')
         uploads = st.file_uploader(f'Upload current {platform} lines', type='csv',
@@ -2863,7 +2906,9 @@ with best:
         if board.empty:
             st.info(f'The uploads contain no {platform} lines for {pick_sport}.')
 
-    if pick_sport not in PICK_MARKETS:
+    if sleeper_feed:
+        show_sleeper_feed(pick_sport)
+    elif pick_sport not in PICK_MARKETS:
         if not board.empty:
             show_best_picks_board(board, pick_sport, (platform, pick_sport, tuple(board_ids)), platform)
         st.info(f'Upload {platform} lines to open the clickable {pick_sport} review. Live prop scanning is unavailable for this sport.')
