@@ -2791,9 +2791,13 @@ with st.sidebar:
 best,tab1,tab2,tab3,tab4,research,report_card=st.tabs(['Best picks', '🔎 Scan markets','🧮 Evaluate prop','🗂️ Paper tracker','📘 Setup','Research sources','Pick Report Card'])
 key_id = sha256(api_key.encode()).hexdigest()
 with best:
-    platform = st.selectbox('Pick site', ['PrizePicks', 'Underdog'])
+    platform = st.selectbox('Pick site', ['PrizePicks', 'Underdog', 'Sleeper'])
     st.subheader(f'{platform} board by sport')
-    source_mode = st.radio(f'{platform} line source', ['Load from feed', 'Upload CSVs'], horizontal=True)
+    if platform == 'Sleeper':
+        source_mode = 'Upload CSVs'
+        st.info('Sleeper lines are imported by CSV. The Odds API does not list a Sleeper feed.')
+    else:
+        source_mode = st.radio(f'{platform} line source', ['Load from feed', 'Upload CSVs'], horizontal=True)
     live_board = source_mode == 'Load from feed'
     if live_board:
         st.caption(f'Loads standard {platform} lines from The Odds API for the selected upcoming games and markets. Feed coverage can differ from your {platform} board.')
@@ -2845,6 +2849,8 @@ with best:
         with st.expander('View every imported line'):
             st.dataframe(all_lines, hide_index=True, use_container_width=True)
         board = all_lines[identity.loc[all_lines.index, 'sport'].eq(pick_sport.casefold())]
+        if board.empty:
+            st.info(f'The uploads contain no {platform} lines for {pick_sport}.')
 
     if pick_sport not in PICK_MARKETS:
         if not board.empty:
@@ -2855,8 +2861,6 @@ with best:
         st.caption(f'Markets scanned for {pick_sport}: {", ".join(allowed_markets)}.')
         if not live_board:
             st.caption(f'Use Away Team at Home Team for event and {platform} for platform.')
-        if boards and board.empty:
-            st.info(f'The uploads contain no {pick_sport} lines.')
         event_limit = st.slider('Maximum games to scan', min_value=1, max_value=12, value=1)
         compare = True
         environment = False
@@ -2986,7 +2990,7 @@ with tab1:
                            'books’ median no-vig prices. Differences in timing, limits and stale lines '
                            'can invalidate it. Injuries, game logs and opponent defense are NOT yet included.')
     st.divider()
-    st.subheader('Import PrizePicks / Underdog lines')
+    st.subheader('Import PrizePicks, Underdog or Sleeper lines')
     template=pd.DataFrame([{'sport':'NBA','event':'Example A vs B','player':'Example Player','market':'points','line':19.5,'platform':'PrizePicks'}])
     st.download_button('Download CSV template',template.to_csv(index=False),'platform_lines_template.csv')
     upload=st.file_uploader('Upload a CSV of platform lines',type='csv')
@@ -3002,7 +3006,7 @@ with tab2:
     with a:
         es=st.selectbox('Sport',ALL_SPORTS); player=st.text_input('Player'); event=st.text_input('Event'); market=st.text_input('Market / stat','points')
     with b:
-        platform=st.selectbox('Platform',['PrizePicks','Underdog']); line=st.number_input('Platform line',value=19.5,step=.5); side=st.selectbox('Side',['Over','Under']); dist=st.selectbox('Model distribution',['Normal (continuous approximation)','Poisson (counts)'])
+        platform=st.selectbox('Platform',['PrizePicks','Underdog','Sleeper']); line=st.number_input('Platform line',value=19.5,step=.5); side=st.selectbox('Side',['Over','Under']); dist=st.selectbox('Model distribution',['Normal (continuous approximation)','Poisson (counts)'])
     with c:
         mu=st.number_input('Independent projection (mean)',value=21.0,step=.5); sigma=st.number_input('Estimated standard deviation',value=5.5,min_value=.01,step=.5,disabled=dist.startswith('Poisson'))
         market_over=st.number_input('No-vig market probability of OVER (%)',value=50.,min_value=0.,max_value=100.,step=.5)
@@ -3059,7 +3063,7 @@ with tab4:
 2. Create a free account at [Streamlit Community Cloud](https://share.streamlit.io/), connect GitHub and deploy `app.py`.
 3. Optional: register for a free key at [The Odds API](https://the-odds-api.com/). Enter the key in the sidebar, or configure `ODDS_API_KEY` as a Streamlit secret.
 4. Fetch events, then request supported player-prop markets. API availability and credits vary; a free tier may not include player props.
-5. Import PrizePicks/Underdog CSV lines and manually enter independent projections in **Evaluate prop**. Save selections before games start, then grade them in **Paper tracker**.
+5. Import PrizePicks, Underdog or Sleeper CSV lines and manually enter independent projections in **Evaluate prop**. Save selections before games start, then grade them in **Paper tracker**.
 
 ### Honest limitations
 - No automatic PrizePicks/Underdog scraping, no unauthorized APIs, and no fake live picks.
