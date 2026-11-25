@@ -2339,7 +2339,24 @@ def show_report_card(key):
     st.download_button('Download report card', picks.to_csv(index=False), 'pick-report-card.csv', mime='text/csv')
 
 
-def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks'):
+def describe_board_coverage(row, now):
+    updated = pd.to_datetime(row.get('Line updated UTC'), utc=True, errors='coerce')
+    if pd.isna(updated) or updated > now:
+        freshness = 'Unknown'
+    else:
+        minutes = int((now - updated).total_seconds() // 60)
+        freshness = f'{minutes} min ago' if minutes < 60 else f'{minutes // 60}h {minutes % 60}m ago'
+    coverage = []
+    if pd.notna(row.get('Projected stat')):
+        coverage.append('Player projection')
+    if pd.notna(row.get('market_estimate_pct')):
+        coverage.append('Exact-line odds')
+    if not coverage:
+        coverage.append('Line only')
+    return freshness, ' · '.join(coverage)
+
+
+def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', source='CSV upload'):
     adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
     if platform == 'PrizePicks':
@@ -2349,12 +2366,27 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks'):
     st.subheader(f'{platform} · {sport} prop review')
     st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
     explanations = [pick_evaluation(row)[:2] for _, row in full_board.iterrows()]
+    timestamp_field = {
+        'The Odds API': 'prizepicks_updated_utc',
+        'Apify': 'Sleeper updated UTC',
+    }.get(source, 'Line updated UTC')
+    updated = pd.to_datetime(full_board.get(timestamp_field, pd.Series(index=full_board.index, dtype=object)),
+                             utc=True, errors='coerce', format='mixed')
+    now = pd.Timestamp.now(tz='UTC')
+    full_board = full_board.assign(**{
+        'Line source': source, 'Line updated UTC': updated.where(updated.le(now)),
+    })
+    coverage = [describe_board_coverage(row, now) for _, row in full_board.iterrows()]
     full_board = full_board.assign(
         Rating=[rating for rating, _ in explanations],
         Reason=[reason for _, reason in explanations],
+        **{'Line age': [age for age, _ in coverage],
+           'Data coverage': [description for _, description in coverage]},
     )
+    known = full_board['Line updated UTC'].notna().sum()
+    st.caption(f'{source} · {known} of {len(full_board)} lines have a usable update timestamp. Line age is measured when the view renders.')
     columns = [
-        'player', 'market', 'line', 'Rating', 'Reason', 'Projected stat',
+        'player', 'market', 'line', 'Rating', 'Reason', 'Line age', 'Data coverage', 'Projected stat',
         'side', 'market_estimate_pct', 'comparison_books', 'Auto status', 'Injury report status',
         'Pregame recheck', 'Minutes sensitivity', 'Opponent missed field goals per game',
         'Weather review', 'status', 'event',
@@ -2384,6 +2416,11 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks'):
     if selected is not None and selected < len(full_board):
         row = full_board.iloc[selected]
         st.subheader('Selected prop evaluation')
+        st.caption(f"{row['Line source']} · {row['Data coverage']}")
+        if pd.notna(row['Line updated UTC']):
+            st.caption(f"Line updated {row['Line updated UTC']:%Y-%m-%d %H:%M UTC} · {row['Line age']}")
+        else:
+            st.caption('Line update time unavailable.')
         show_pick_evaluation(row)
         if row.get('Pregame recheck'):
             st.warning('Pregame recheck · ' + row['Pregame recheck'].replace('\n', ' · '))
@@ -2446,7 +2483,7 @@ def show_sleeper_feed(sport):
     if not active:
         st.info(f'No verified upcoming standard Sleeper lines returned for {sport}.')
         return
-    show_best_picks_board(pd.DataFrame(active), sport, ('sleeper_feed', sport, fetched), 'Sleeper')
+    show_best_picks_board(pd.DataFrame(active), sport, ('sleeper_feed', sport, fetched), 'Sleeper', 'Apify')
 
 
 def show_board_research(picks, sport, board_scope, selected_index=None):
@@ -2661,16 +2698,18 @@ def sportsbook_rows(data):
 
 
 def match_prizepicks(event_rankings, board):
+    fields = ['event', 'player', 'market', 'line']
+    if 'Line updated UTC' in board:
+        fields.append('Line updated UTC')
     if not event_rankings:
-        return board[['event', 'player', 'market', 'line']].assign(
+        return board[fields].assign(
             side=None, market_estimate_pct=None, comparison_books=None
         )
     ranked = pd.concat(event_rankings, ignore_index=True)
-    fields = ['event', 'player', 'market', 'line']
     for frame in (ranked, board):
-        for field in fields[:-1]:
+        for field in ('event', 'player', 'market'):
             frame[field + '_key'] = frame[field].astype('string').str.strip().str.casefold()
-    keys = [field + '_key' for field in fields[:-1]] + ['line']
+    keys = ['event_key', 'player_key', 'market_key', 'line']
     consensus = (
         ranked.drop_duplicates(keys + ['side', 'book'])
         .groupby(keys + ['side'], as_index=False)
@@ -2902,16 +2941,22 @@ with best:
             st.error(f'{upload.name} — {exc}')
             continue
         frame = frame.dropna(subset=['sport', 'event', 'player', 'market'])
-        frame = frame[frame['platform'].astype(str).str.strip().str.casefold().eq('prizepicks')]
+        frame = frame[frame['platform'].astype(str).str.strip().str.casefold().eq(platform.casefold())]
         if frame.empty:
             st.info(f'{upload.name} has no valid {platform} lines.')
             continue
-        boards.append(frame[template.columns])
+        boards.append(frame.reindex(columns=[*template.columns, 'Line updated UTC']))
         board_ids.append(sha256(upload.getvalue()).hexdigest())
 
     requested_sport = st.query_params.get('sport')
     pick_sport = st.selectbox('Pick sport', ALL_SPORTS,
                              index=ALL_SPORTS.index(requested_sport) if requested_sport in ALL_SPORTS else 0)
+    feed_available = (pick_sport in SLEEPER_LEAGUES if platform == 'Sleeper' else pick_sport in PICK_MARKETS)
+    if feed_available:
+        provider = 'Apify' if platform == 'Sleeper' else 'The Odds API'
+        st.caption(f'{platform} · {pick_sport} coverage: {provider} feed available. Line availability depends on the slate and markets.')
+    else:
+        st.caption(f'{platform} · {pick_sport} coverage: CSV import.')
     if platform == 'PrizePicks':
         show_cs2_review(pick_sport)
         show_nba_review(pick_sport)
@@ -2924,7 +2969,7 @@ with best:
     board = pd.DataFrame(columns=template.columns)
     if boards:
         all_lines = pd.concat(boards, ignore_index=True)
-        identity = all_lines.drop(columns='platform').copy()
+        identity = all_lines[['sport', 'event', 'player', 'market', 'line']].copy()
         for column in ['sport', 'event', 'player', 'market']:
             identity[column] = identity[column].astype(str).str.strip().str.casefold()
         all_lines = all_lines.loc[~identity.duplicated()]
@@ -3009,7 +3054,8 @@ with best:
                 else:
                     st.caption(f'{len(picks)} {platform} lines loaded.')
                     picks = picks.drop(columns=['side', 'market_estimate_pct', 'comparison_books'])
-                show_best_picks_board(picks.assign(platform=platform), pick_sport, pick_scope, platform)
+                show_best_picks_board(picks.assign(platform=platform), pick_sport, pick_scope, platform,
+                                      'The Odds API' if live_board else 'CSV upload')
 
 with tab1:
     st.subheader('Live sportsbook market discovery')
