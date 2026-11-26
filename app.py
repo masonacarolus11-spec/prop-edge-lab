@@ -2615,7 +2615,8 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
                 hide_index=True,
             )
             st.caption('Baseline blends each team’s season and last-five scoring and opponent points allowed. Negative home spread favors the home team.')
-    table_key = sha256((repr(board_scope) + review_order + full_board[['player', 'event', 'market', 'line']].to_json()).encode()).hexdigest()[:18]
+    visible_rows = full_board[['player', 'event', 'market', 'line']].to_json(orient='records')
+    table_key = sha256((repr(board_scope) + review_order + visible_rows).encode()).hexdigest()[:18]
     selected = selectable_prop_table(full_board, f'best_picks:{table_key}', visible)
     if selected is None:
         selected = st.selectbox(
