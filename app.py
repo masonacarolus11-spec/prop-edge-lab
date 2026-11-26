@@ -1937,6 +1937,7 @@ def track_model_scan(board, sport, platform='PrizePicks'):
     observed = pd.Timestamp.now(tz='UTC')
     labels = {'Model lean: More': 'More', 'Model lean: Less': 'Less'}
     snapshots = []
+    probabilities = []
     for row in board.to_dict('records'):
         if row.get('Model signal') not in labels:
             continue
@@ -1956,8 +1957,13 @@ def track_model_scan(board, sport, platform='PrizePicks'):
             row.get('Projected stat'), row.get('Injury report status'),
             row.get('Minutes sensitivity'), row.get('comparison_books'), row.get('Weather review'),
         ))
+        model_more = row.get('Model More estimate (%)')
+        probability = float(model_more) / 100 if pd.notna(model_more) else None
+        if probability is not None and labels[row['Model signal']] == 'Less':
+            probability = 1 - probability
+        probabilities.append(probability)
     if snapshots:
-        save_report_picks(DB, snapshots, platform)
+        save_report_picks(DB, snapshots, platform, probabilities=probabilities)
         st.caption(f'{len(snapshots)} eligible pregame leans on this board. Pick Report Card keeps the first saved line for each site, player, game and stat.')
 
 
@@ -2318,6 +2324,23 @@ def refresh_report_grades(picks, panda_key=''):
     return store_report_grades(results)
 
 
+def report_calibration(shown):
+    probabilities = pd.to_numeric(shown['model_probability'], errors='coerce')
+    eligible = shown['result'].isin(['Hit', 'Miss']) & probabilities.between(0, 1)
+    graded = shown.loc[eligible, ['Grading']].copy()
+    graded['Predicted'] = probabilities.loc[eligible]
+    graded['Hit'] = shown.loc[eligible, 'result'].eq('Hit')
+    graded['Confidence'] = pd.cut(
+        graded['Predicted'], [-0.01, .5, .6, .7, .8, 1],
+        labels=['≤50%', '>50–60%', '>60–70%', '>70–80%', '>80%'],
+    )
+    graded['Squared error'] = (graded['Predicted'] - graded['Hit'].astype(float)) ** 2
+    return graded.groupby(['Grading', 'Confidence'], observed=True).agg(
+        Decisions=('Hit', 'size'), Predicted=('Predicted', 'mean'),
+        Actual=('Hit', 'mean'), Brier=('Squared error', 'mean'),
+    ).reset_index()
+
+
 def show_report_card(key):
     st.subheader('Pick Report Card')
     st.caption('Automatic box-score grading covers supported NBA, NFL, CS2 and Dota 2 props. Paper Tracker results can be entered manually for any sport or site.')
@@ -2329,6 +2352,7 @@ def show_report_card(key):
         )
         manual = pd.read_sql_query(
             "SELECT sport, platform, player, event, market, line, side, actual, created_at AS observed, "
+            "model_prob AS model_probability, "
             "CASE status WHEN 'Win' THEN 'Hit' WHEN 'Loss' THEN 'Miss' ELSE status END AS result "
             "FROM picks", conn,
         )
@@ -2384,6 +2408,17 @@ def show_report_card(key):
             100 * breakdown['Hit'] / breakdown['Decisions'].replace(0, np.nan)
         ).round(1)
         st.dataframe(breakdown.reset_index(), hide_index=True)
+    with st.expander('How accurate were the confidence estimates?'):
+        validation = report_calibration(shown)
+        if validation.empty:
+            st.info('Confidence checks appear once a pick with a saved probability has a hit or miss.')
+        else:
+            validation['Predicted'] = (100 * validation['Predicted']).round(1)
+            validation['Actual'] = (100 * validation['Actual']).round(1)
+            validation['Brier'] = validation['Brier'].round(3)
+            st.dataframe(validation.rename(columns={'Predicted': 'Average model confidence (%)',
+                                                   'Actual': 'Actual hit rate (%)'}), hide_index=True)
+            st.caption('Brier score measures probability error. Lower is better. Read each confidence band alongside its sample size.')
     st.dataframe(shown[['sport', 'platform', 'Grading', 'player', 'event', 'market',
                         'line', 'side', 'projection', 'actual', 'result', 'observed',
                         'injury', 'minutes', 'books']], hide_index=True)

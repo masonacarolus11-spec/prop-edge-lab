@@ -22,6 +22,7 @@ REPORT_CARD_SCHEMA = """CREATE TABLE IF NOT EXISTS report_card (
             injury TEXT, minutes TEXT, books INTEGER, weather TEXT,
             result TEXT NOT NULL DEFAULT 'Pending', actual REAL,
             platform TEXT NOT NULL DEFAULT 'PrizePicks',
+            model_probability REAL,
             PRIMARY KEY (event_id, player_id, market, platform)
         )"""
 
@@ -36,6 +37,8 @@ def init_report_card(connection):
         fields = ', '.join(columns)
         connection.execute(f'INSERT INTO report_card ({fields}) SELECT {fields} FROM report_card_legacy')
         connection.execute('DROP TABLE report_card_legacy')
+    elif 'model_probability' not in columns:
+        connection.execute('ALTER TABLE report_card ADD COLUMN model_probability REAL')
     connection.execute(
         """CREATE TABLE IF NOT EXISTS pregame_state (
             prop_key TEXT PRIMARY KEY, evidence TEXT NOT NULL
@@ -146,16 +149,19 @@ def observe_pregame_changes(db, observations):
     return latest
 
 
-def save_report_picks(db, rows, platform='PrizePicks'):
+def save_report_picks(db, rows, platform='PrizePicks', *, probabilities=None):
+    records = ((*row, platform, None) for row in rows) if probabilities is None else (
+        (*row, platform, probability) for row, probability in zip(rows, probabilities, strict=True)
+    )
     with closing(sqlite3.connect(db)) as connection, connection:
         before = connection.total_changes
         connection.executemany(
             """INSERT INTO report_card (
                 event_id, player_id, market, sport, player, event, kickoff, away, home,
-                observed, line, side, projection, injury, minutes, books, weather, platform
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                observed, line, side, projection, injury, minutes, books, weather, platform, model_probability
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (event_id, player_id, market, platform) DO NOTHING""",
-            ((*row, platform) for row in rows),
+            records,
         )
         return connection.total_changes - before
 
