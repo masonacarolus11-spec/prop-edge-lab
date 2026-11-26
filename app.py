@@ -3343,7 +3343,13 @@ with best:
         else:
             st.caption('Select a prop and save it to keep it here for this session.')
     pacific_today = dt.datetime.now(ZoneInfo('America/Los_Angeles')).date()
-    public_slate = st.query_params.get('nba_lines') == '2026-11-27'
+    snapshot = next((
+        (sport, url) for sport, url in (
+            ('NBA', 'https://www.prizepicks.com/sport/nba?date=2026-11-27&from=2026-11-25'),
+            ('NFL', 'https://www.prizepicks.com/sport/nfl'),
+        ) if st.query_params.get(f'{sport.lower()}_lines') == '2026-11-27'
+    ), None)
+    public_slate = snapshot is not None
     sample_day = dt.date(2026, 11, 27)
     default_day = sample_day if public_slate and pacific_today <= sample_day <= pacific_today + dt.timedelta(days=1) else pacific_today
     slate_date = st.date_input(
@@ -3377,9 +3383,12 @@ with best:
     if source_mode == 'Paste lines':
         initial_text = ''
         if public_slate and platform == 'PrizePicks':
-            initial_text = Path(__file__).with_name('nba-lines-2026-11-27.txt').read_text(encoding='utf-8')
+            snapshot_sport, snapshot_url = snapshot
+            initial_text = Path(__file__).with_name(
+                f'{snapshot_sport.lower()}-lines-2026-11-27.txt',
+            ).read_text(encoding='utf-8')
             st.caption('Saved November 27 PrizePicks public snapshot. Lines can change.')
-            st.markdown('[Original PrizePicks board](https://www.prizepicks.com/sport/nba?date=2026-11-27&from=2026-11-25)')
+            st.markdown(f'[Original PrizePicks board]({snapshot_url})')
         st.caption('One prop per line. Use Sport | Away Team at Home Team | Player | Stat | Line.')
         st.caption('You can add an optional sixth field for the scheduled start in ISO format with a timezone.')
         with st.form(f'pasted_props:{platform}'):

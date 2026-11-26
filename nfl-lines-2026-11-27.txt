@@ -1,0 +1,6 @@
+NFL | Denver Broncos at Pittsburgh Steelers | Bo Nix | Passing yards | 201.5 | 2026-11-27T20:00:00Z
+NFL | Denver Broncos at Pittsburgh Steelers | Mason Rudolph | Passing yards | 173.5 | 2026-11-27T20:00:00Z
+NFL | Denver Broncos at Pittsburgh Steelers | Jonah Coleman | Rushing yards | 75.5 | 2026-11-27T20:00:00Z
+NFL | Denver Broncos at Pittsburgh Steelers | Jaylen Warren | Rushing yards | 64.5 | 2026-11-27T20:00:00Z
+NFL | Denver Broncos at Pittsburgh Steelers | Jaylen Waddle | Receiving yards | 42.5 | 2026-11-27T20:00:00Z
+NFL | Denver Broncos at Pittsburgh Steelers | Pat Bryant | Receiving yards | 27.5 | 2026-11-27T20:00:00Z
