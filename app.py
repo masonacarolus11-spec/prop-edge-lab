@@ -60,7 +60,7 @@ def fetch_events(key, sport):
 def fetch_event_odds(key, sport, event_id, regions, markets):
     data, remaining = odds_client(key).get(
         f'sports/{sport}/events/{event_id}/odds',
-        regions=regions, markets=markets, oddsFormat='american',
+        regions=regions, markets=markets, oddsFormat='american', includeLinks='true',
     )
     if not isinstance(data, dict) or not isinstance(data.get('bookmakers'), list):
         raise ProviderError('invalid_response', 'The Odds API returned unexpected odds data.')
@@ -2685,6 +2685,8 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
             st.caption('Line update time unavailable.')
         if pd.notna(row.get('Line movement')):
             st.caption(f"First line seen this session {row['First seen line']:g} · Change {row['Line movement']:+g}")
+        if isinstance(row.get('Offer page URL'), str) and row['Offer page URL']:
+            st.link_button(f"Open {platform} {row['Offer page type'].lower()} page", row['Offer page URL'])
         show_pick_evaluation(row)
         with st.expander('Compare this prop across sites'):
             comparison = matching_site_lines(row, site_boards, now)
@@ -3083,11 +3085,23 @@ def scan_top_picks(key, sport, regions, board, event_limit, slate_date=None):
 DFS_BOOK_KEYS = {'prizepicks', 'dabble_us_dfs', 'parlayplay', 'pick6', 'underdog'}
 
 
+def provider_page_link(book, market):
+    for label, link in (('Market', market.get('link')), ('Event', book.get('link'))):
+        if not isinstance(link, str) or any(ch.isspace() or ord(ch) < 32 for ch in link):
+            continue
+        try:
+            parsed = urlsplit(link)
+            if parsed.scheme == 'https' and parsed.hostname and parsed.username is None and parsed.password is None:
+                return link, label
+        except ValueError:
+            continue
+    return None, None
+
+
 def compare_live_event(data, event, markets, platform='PrizePicks'):
     books = data['bookmakers']
-    platform_rows = sportsbook_rows({
-        'bookmakers': [book for book in books if book.get('key') == platform.casefold()]
-    })
+    platform_books = [book for book in books if book.get('key') == platform.casefold()]
+    platform_rows = sportsbook_rows({'bookmakers': platform_books})
     if platform_rows.empty:
         return pd.DataFrame()
     platform_rows['line'] = pd.to_numeric(platform_rows['line'], errors='coerce')
@@ -3111,6 +3125,17 @@ def compare_live_event(data, event, markets, platform='PrizePicks'):
         ),
         on=['player', 'market', 'line'], how='left', validate='one_to_one',
     )
+    links = {}
+    for book in platform_books:
+        for market in book.get('markets', []):
+            link, label = provider_page_link(book, market)
+            if link:
+                links.setdefault(market.get('key'), (link, label))
+    pages = [links.get(market, (None, None)) for market in results['market']]
+    results = results.assign(**{
+        'Offer page URL': [link for link, _ in pages],
+        'Offer page type': [label for _, label in pages],
+    })
     return results.assign(
         event_id=event['id'], starts_utc=event['commence_time'], platform=platform,
         status=results['market_estimate_pct'].notna().map({
