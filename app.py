@@ -2458,6 +2458,13 @@ def rank_model_leans(board):
     return board.iloc[order.sort_values(ascending=False, kind='stable').index]
 
 
+def pregame_watchlist(board):
+    signals = board.get('Model signal', pd.Series('', index=board.index)).fillna('')
+    status = board.get('Auto status', pd.Series('', index=board.index)).fillna('')
+    changes = board.get('Pregame recheck', pd.Series('', index=board.index)).fillna('')
+    return board.loc[signals.str.startswith('Recheck') | status.str.startswith('Hold') | changes.ne('')]
+
+
 def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', source='CSV upload'):
     adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
@@ -2467,9 +2474,16 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         track_model_scan(full_board, sport, platform)
     st.subheader(f'{platform} · {sport} prop review')
     st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
-    review_order = st.radio('Board view', ['Scan order', 'Strongest model leans first', 'Top 10 leans'],
+    watchlist = pregame_watchlist(full_board)
+    review_order = st.radio('Board view', ['Scan order', 'Strongest model leans first', 'Top 10 leans', 'Pregame watchlist'],
                             horizontal=True, key=f'board_order:{sport}:{platform}')
-    if review_order != 'Scan order':
+    if review_order == 'Pregame watchlist':
+        full_board = watchlist
+        if full_board.empty:
+            st.info('No rechecks or availability holds flagged on this board.')
+            return
+        st.caption(f'{len(full_board)} lines flagged for another look before game time.')
+    if review_order in ('Strongest model leans first', 'Top 10 leans'):
         full_board = rank_model_leans(full_board)
         st.caption('Eligible More and Less leans are ordered by the size of the model’s gap from exact-line sportsbook consensus.')
     if review_order == 'Top 10 leans':
