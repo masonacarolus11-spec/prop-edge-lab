@@ -2443,14 +2443,18 @@ def describe_board_coverage(row, now):
     return freshness, ' · '.join(coverage)
 
 
-def rank_model_leans(board):
+def eligible_model_leans(board):
     if not {'Model signal', 'Model–market Over gap (pp)'}.issubset(board.columns):
-        return board
+        return pd.Series(np.nan, index=board.index)
     eligible = board['Model signal'].isin(['Model lean: More', 'Model lean: Less'])
     if 'Pregame recheck' in board:
         eligible &= board['Pregame recheck'].fillna('').eq('')
     gap = pd.to_numeric(board['Model–market Over gap (pp)'], errors='coerce')
-    order = gap.abs().where(eligible & np.isfinite(gap)).reset_index(drop=True)
+    return gap.abs().where(eligible & np.isfinite(gap))
+
+
+def rank_model_leans(board):
+    order = eligible_model_leans(board).reset_index(drop=True)
     return board.iloc[order.sort_values(ascending=False, kind='stable').index]
 
 
@@ -2463,11 +2467,18 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         track_model_scan(full_board, sport, platform)
     st.subheader(f'{platform} · {sport} prop review')
     st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
-    review_order = st.radio('Board order', ['Scan order', 'Strongest model leans first'],
+    review_order = st.radio('Board view', ['Scan order', 'Strongest model leans first', 'Top 10 leans'],
                             horizontal=True, key=f'board_order:{sport}:{platform}')
-    if review_order == 'Strongest model leans first':
+    if review_order != 'Scan order':
         full_board = rank_model_leans(full_board)
         st.caption('Eligible More and Less leans are ordered by the size of the model’s gap from exact-line sportsbook consensus.')
+    if review_order == 'Top 10 leans':
+        eligible = eligible_model_leans(full_board).notna().to_numpy()
+        full_board = full_board.iloc[eligible].head(10)
+        if full_board.empty:
+            st.info('No eligible model leans with exact-line sportsbook comparisons on this board.')
+            return
+        st.caption(f'{len(full_board)} eligible leans shown.')
     explanations = [pick_evaluation(row)[:2] for _, row in full_board.iterrows()]
     timestamp_field = {
         'The Odds API': 'prizepicks_updated_utc',
