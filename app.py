@@ -2408,6 +2408,17 @@ def describe_board_coverage(row, now):
     return freshness, ' · '.join(coverage)
 
 
+def rank_model_leans(board):
+    if not {'Model signal', 'Model–market Over gap (pp)'}.issubset(board.columns):
+        return board
+    eligible = board['Model signal'].isin(['Model lean: More', 'Model lean: Less'])
+    if 'Pregame recheck' in board:
+        eligible &= board['Pregame recheck'].fillna('').eq('')
+    gap = pd.to_numeric(board['Model–market Over gap (pp)'], errors='coerce')
+    order = gap.abs().where(eligible & np.isfinite(gap)).reset_index(drop=True)
+    return board.iloc[order.sort_values(ascending=False, kind='stable').index]
+
+
 def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', source='CSV upload'):
     adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
@@ -2417,6 +2428,11 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         track_model_scan(full_board, sport, platform)
     st.subheader(f'{platform} · {sport} prop review')
     st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
+    review_order = st.radio('Board order', ['Scan order', 'Strongest model leans first'],
+                            horizontal=True, key=f'board_order:{sport}:{platform}')
+    if review_order == 'Strongest model leans first':
+        full_board = rank_model_leans(full_board)
+        st.caption('Eligible More and Less leans are ordered by the size of the model’s gap from exact-line sportsbook consensus.')
     explanations = [pick_evaluation(row)[:2] for _, row in full_board.iterrows()]
     timestamp_field = {
         'The Odds API': 'prizepicks_updated_utc',
@@ -2454,7 +2470,7 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
                 hide_index=True,
             )
             st.caption('Baseline blends each team’s season and last-five scoring and opponent points allowed. Negative home spread favors the home team.')
-    table_key = sha256((repr(board_scope) + picks.to_json()).encode()).hexdigest()[:18]
+    table_key = sha256((repr(board_scope) + review_order + picks.to_json()).encode()).hexdigest()[:18]
     selected = selectable_prop_table(full_board, f'best_picks:{table_key}', visible)
     if selected is None:
         selected = st.selectbox(
