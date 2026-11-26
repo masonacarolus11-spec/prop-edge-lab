@@ -2465,6 +2465,17 @@ def pregame_watchlist(board):
     return board.loc[signals.str.startswith('Recheck') | status.str.startswith('Hold') | changes.ne('')]
 
 
+def filter_prop_board(board, query='', market=None):
+    if market is not None:
+        board = board.loc[board['market'].eq(market)]
+    query = query.strip().casefold()
+    if query:
+        matches = (board['player'].astype('string').str.casefold().str.contains(query, regex=False, na=False)
+                   | board['event'].astype('string').str.casefold().str.contains(query, regex=False, na=False))
+        board = board.loc[matches]
+    return board
+
+
 def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', source='CSV upload'):
     adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
@@ -2474,6 +2485,18 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         track_model_scan(full_board, sport, platform)
     st.subheader(f'{platform} · {sport} prop review')
     st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
+    board_key = f'{sport}:{platform}'
+    search, market_filter = st.columns(2)
+    query = search.text_input('Find a player or matchup', key=f'board_search:{board_key}')
+    market = market_filter.selectbox(
+        'Market filter', [None, *sorted(full_board['market'].dropna().unique(), key=str)],
+        format_func=lambda value: 'All markets' if value is None else str(value).removeprefix('player_').replace('_', ' ').title(),
+        key=f'board_market:{board_key}',
+    )
+    full_board = filter_prop_board(full_board, query, market)
+    if full_board.empty:
+        st.info('No lines match these filters.')
+        return
     watchlist = pregame_watchlist(full_board)
     review_order = st.radio('Board view', ['Scan order', 'Strongest model leans first', 'Top 10 leans', 'Pregame watchlist'],
                             horizontal=True, key=f'board_order:{sport}:{platform}')
@@ -2530,7 +2553,7 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
                 hide_index=True,
             )
             st.caption('Baseline blends each team’s season and last-five scoring and opponent points allowed. Negative home spread favors the home team.')
-    table_key = sha256((repr(board_scope) + review_order + picks.to_json()).encode()).hexdigest()[:18]
+    table_key = sha256((repr(board_scope) + review_order + full_board[['player', 'event', 'market', 'line']].to_json()).encode()).hexdigest()[:18]
     selected = selectable_prop_table(full_board, f'best_picks:{table_key}', visible)
     if selected is None:
         selected = st.selectbox(
