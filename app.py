@@ -2540,10 +2540,14 @@ def matching_site_lines(selected, boards, now):
     if not matches:
         return pd.DataFrame()
     comparison = pd.DataFrame(matches)
-    return (comparison[['Site', 'line', 'Line source', 'Line updated UTC']]
+    comparison = (comparison[['Site', 'line', 'Line source', 'Line updated UTC']]
             .drop_duplicates(['Site', 'line'])
             .sort_values(['line', 'Site'])
             .rename(columns={'line': 'Line'}))
+    return comparison.assign(**{
+        'Lowest for More': comparison['Line'].eq(comparison['Line'].min()),
+        'Highest for Less': comparison['Line'].eq(comparison['Line'].max()),
+    })
 
 
 def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', source='CSV upload'):
@@ -2672,8 +2676,15 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
             if comparison.empty or comparison['Site'].nunique() < 2:
                 st.info('Load another site’s board with the same upcoming matchup and market to compare lines.')
             else:
+                lowest = comparison.loc[comparison['Lowest for More']]
+                highest = comparison.loc[comparison['Highest for Less']]
+                left, right = st.columns(2)
+                left.metric('Lowest line for More', f"{lowest['Line'].iloc[0]:g}")
+                left.caption(' · '.join(lowest['Site']))
+                right.metric('Highest line for Less', f"{highest['Line'].iloc[0]:g}")
+                right.caption(' · '.join(highest['Site']))
                 st.dataframe(comparison, hide_index=True)
-                st.caption('Compares saved lines in this session. Check timestamps and site payouts before comparing offers.')
+                st.caption('These highlights compare line values. Payouts and line freshness can differ by site.')
         if row.get('Pregame recheck'):
             st.warning('Pregame recheck · ' + row['Pregame recheck'].replace('\n', ' · '))
             st.caption('Review the changed line or availability before using the earlier evaluation.')
