@@ -2465,6 +2465,29 @@ def pregame_watchlist(board):
     return board.loc[signals.str.startswith('Recheck') | status.str.startswith('Hold') | changes.ne('')]
 
 
+def build_paper_lineup(board, size, now):
+    required = {'event', 'player', 'starts_utc'}
+    if not required.issubset(board.columns):
+        return board.iloc[:0]
+    ranked = rank_model_leans(board)
+    starts = pd.to_datetime(ranked['starts_utc'], utc=True, errors='coerce', format='mixed')
+    eligible = eligible_model_leans(ranked).notna() & starts.gt(now)
+    if 'Auto status' in ranked:
+        eligible &= ~ranked['Auto status'].astype('string').str.startswith('Hold', na=False)
+    names = ranked[['event', 'player']].astype('string').apply(lambda col: col.str.strip().str.casefold())
+    eligible &= names.notna().all(axis=1) & names.fillna('').ne('').all(axis=1)
+    used_players, used_events, chosen = set(), set(), []
+    for index, (event, player) in enumerate(names.itertuples(index=False, name=None)):
+        if not eligible.iloc[index] or player in used_players or event in used_events:
+            continue
+        chosen.append(index)
+        used_players.add(player)
+        used_events.add(event)
+        if len(chosen) == size:
+            break
+    return ranked.iloc[chosen]
+
+
 def filter_prop_board(board, query='', market=None):
     if market is not None:
         board = board.loc[board['market'].eq(market)]
@@ -2529,8 +2552,20 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         st.info('No lines match these filters.')
         return
     watchlist = pregame_watchlist(full_board)
-    review_order = st.radio('Board view', ['Scan order', 'Strongest model leans first', 'Top 10 leans', 'Pregame watchlist'],
+    review_order = st.radio('Board view', ['Scan order', 'Strongest model leans first', 'Top 10 leans',
+                                         'Pregame watchlist', 'Paper lineup'],
                             horizontal=True, key=f'board_order:{sport}:{platform}')
+    if review_order == 'Paper lineup':
+        size = st.select_slider('Props in lineup', options=[2, 3, 4, 5, 6], value=3,
+                                key=f'lineup_size:{board_key}')
+        full_board = build_paper_lineup(full_board, size, pd.Timestamp.now(tz='UTC'))
+        if len(full_board) < size:
+            st.info(f'Found {len(full_board)} of {size} eligible props from different upcoming matchups.')
+            if full_board.empty:
+                return
+        else:
+            st.caption(f'{size}-prop paper lineup')
+        st.caption('Takes the largest model-to-market gaps first, with one prop per player and matchup. Joint probabilities and site payouts are unmodeled.')
     if review_order == 'Pregame watchlist':
         full_board = watchlist
         if full_board.empty:
