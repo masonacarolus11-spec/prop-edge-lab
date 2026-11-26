@@ -550,6 +550,8 @@ def show_cs2_review(sport):
             row = report.iloc[selected]
             st.markdown(f"**{row['Player']} · {row['Market']} · {row['PrizePicks line']:g}**")
             st.write(f"**{row['Review']}** · {row['Reason']}")
+            show_choose_prop('CS2', 'PrizePicks', row['Player'], row['Match'], row['Market'],
+                             row['PrizePicks line'], row['Review'], review)
         if review == '2026-11-24-map10':
             st.markdown('[CS2Props lines and projections](https://cs2props.org/)')
         else:
@@ -618,6 +620,8 @@ def show_nba_review(sport):
                              format_func=lambda i: f"{rows[i]['player']} · {rows[i]['stat']}")
     row = rows[index]
     st.markdown(f"### {row['player']} · {row['stat']}")
+    show_choose_prop('NBA', 'PrizePicks', row['player'], row.get('match', f'NBA slate {slate}'),
+                     row['stat'], row['line'], row['lean'], slate)
     if scan_snapshot:
         gap = row['projection'] - row['line']
         if row.get('match'):
@@ -2727,6 +2731,8 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         if isinstance(row.get('Offer page URL'), str) and row['Offer page URL']:
             st.link_button(f"Open {platform} {row['Offer page type'].lower()} page", row['Offer page URL'])
         show_pick_evaluation(row)
+        show_choose_prop(sport, platform, row['player'], row['event'], row['market'], row['line'],
+                         row['Rating'], row.get('starts_utc'), row.get('Model More estimate (%)'))
         save_prop_for_review(row, sport, platform)
         if isinstance(row.get('Exact-line sportsbook prices'), str):
             with st.expander('Compare exact-line sportsbook prices'):
@@ -2931,6 +2937,9 @@ def init_db():
             'PRIMARY KEY (sport, event_id, player, market))'
         )
         c.execute('CREATE TABLE IF NOT EXISTS picks (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT, sport TEXT, event TEXT, player TEXT, market TEXT, line REAL, side TEXT, model_prob REAL, market_prob REAL, edge REAL, platform TEXT, payout_multiplier REAL, status TEXT DEFAULT "Pending", actual REAL, closing_line REAL, notes TEXT)')
+        if 'choice_key' not in {row[1] for row in c.execute('PRAGMA table_info(picks)')}:
+            c.execute('ALTER TABLE picks ADD COLUMN choice_key TEXT')
+        c.execute('CREATE UNIQUE INDEX IF NOT EXISTS picks_choice_key ON picks(choice_key)')
 init_db()
 
 def american_prob(odds):
@@ -3249,10 +3258,35 @@ def normalize_upload(df):
     return df.dropna(subset=['line'])
 
 def add_pick(row):
-    cols=['created_at','sport','event','player','market','line','side','model_prob','market_prob','edge','platform','payout_multiplier','notes']
+    cols=['created_at','sport','event','player','market','line','side','model_prob','market_prob','edge','platform','payout_multiplier','notes','choice_key']
     vals=[dt.datetime.now(dt.timezone.utc).isoformat()]+[row.get(x) for x in cols[1:]]
     with sqlite3.connect(DB) as c:
-        c.execute('INSERT INTO picks ('+','.join(cols)+') VALUES ('+','.join(['?']*len(cols))+')',vals)
+        return bool(c.execute('INSERT INTO picks ('+','.join(cols)+') VALUES ('+','.join(['?']*len(cols))+') '
+                              'ON CONFLICT(choice_key) DO NOTHING', vals).rowcount)
+
+
+def choose_prop(sport, platform, player, event, market, line, side, scope, probability=None):
+    market = str(market).casefold().removeprefix('player_').replace('_', ' ')
+    identity = (sport, platform, player, event, market, line, side, scope)
+    choice_key = sha256(repr(identity).casefold().encode()).hexdigest()
+    return add_pick(dict(sport=sport, platform=platform, player=player, event=event,
+                         market=market, line=line, side=side, model_prob=probability,
+                         choice_key=choice_key, notes='Chosen as a personal paper pick.'))
+
+
+def show_choose_prop(sport, platform, player, event, market, line, rating, scope, model_more=None):
+    widget = sha256(repr((sport, platform, player, event, market, line, scope)).encode()).hexdigest()[:18]
+    left, right = st.columns([1, 2])
+    direction = left.selectbox('Your pick side', ['More', 'Less'], index=int(str(rating).endswith('Less')),
+                               key=f'choose_side:{widget}')
+    if right.button('Choose as my pick', key=f'choose_pick:{widget}'):
+        probability = float(model_more) / 100 if pd.notna(model_more) else None
+        if probability is not None and direction == 'Less':
+            probability = 1 - probability
+        if choose_prop(sport, platform, player, event, market, float(line), direction, str(scope), probability):
+            st.success('Added to Paper Tracker → My picks.')
+        else:
+            st.info('This pick is already in Paper Tracker → My picks.')
 
 with st.sidebar:
     st.header('Configuration')
@@ -3552,24 +3586,39 @@ with report_card:
 with tab3:
     st.subheader('Results and validation')
     with sqlite3.connect(DB) as conn: picks=pd.read_sql_query('SELECT * FROM picks ORDER BY id DESC',conn)
+    tracker_view = st.radio('Tracker view', ['My picks', 'All paper predictions'], horizontal=True)
+    if tracker_view == 'My picks':
+        picks = picks.loc[picks['choice_key'].notna()]
     if picks.empty: st.info('No paper predictions yet. Save a projection in Evaluate prop.')
     else:
         graded=picks[picks.status.isin(['Win','Loss'])]
         k1,k2,k3=st.columns(3)
         k1.metric('Predictions',len(picks));k2.metric('Graded',len(graded));k3.metric('Hit rate',f'{(graded.status=="Win").mean():.1%}' if len(graded) else '—')
-        if len(graded):
-            outcome=(graded.status=='Win').astype(float)
-            st.metric('Brier score (lower is better)',f'{np.mean((graded.model_prob-outcome)**2):.3f}')
+        calibrated = graded.loc[graded['model_prob'].notna()]
+        if len(calibrated):
+            outcome=(calibrated.status=='Win').astype(float)
+            st.metric('Brier score (lower is better)',f'{np.mean((calibrated.model_prob-outcome)**2):.3f}')
             st.caption('ROI cannot be inferred reliably from per-leg payout assumptions on multi-pick entries.')
-        st.dataframe(picks,use_container_width=True)
+        st.dataframe(picks.drop(columns='choice_key'),use_container_width=True)
         st.download_button('Back up all predictions (CSV)',picks.to_csv(index=False),'prop_predictions_backup.csv')
         ident=st.selectbox('Grade prediction ID',picks.id.tolist(),format_func=lambda i: f'#{i} — '+str(picks.loc[picks.id==i,'player'].iloc[0]))
-        status=st.selectbox('Outcome',['Pending','Win','Loss','Push','Void'])
-        actual=st.number_input('Actual stat',value=0.,step=.5)
+        status=st.selectbox('Outcome',['Grade from final stat','Pending','Win','Loss','Push','Void'])
+        actual=st.number_input('Actual stat',value=None,step=.5)
         closing=st.number_input('Closing platform line (if observed)',value=0.,step=.5)
         if st.button('Update result'):
-            with sqlite3.connect(DB) as conn: conn.execute('UPDATE picks SET status=?, actual=?, closing_line=? WHERE id=?',(status,actual,closing if closing else None,int(ident)))
-            st.success('Updated. Refresh page to see new metrics.')
+            if status == 'Grade from final stat':
+                if actual is None:
+                    st.error('Enter the final stat to grade this pick.')
+                else:
+                    pick = picks.loc[picks.id.eq(ident)].iloc[0]
+                    side = {'Over': 'More', 'Under': 'Less'}.get(pick['side'], pick['side'])
+                    result = grade_score(3, side, actual, pick['line'])
+                    status = {'Hit': 'Win', 'Miss': 'Loss'}.get(result, result)
+            if status != 'Grade from final stat':
+                with sqlite3.connect(DB) as conn:
+                    conn.execute('UPDATE picks SET status=?, actual=?, closing_line=? WHERE id=?',
+                                 (status, actual, closing if closing else None, int(ident)))
+                st.rerun()
 with tab4:
     st.markdown('''### Zero-cost deployment
 1. Create a free GitHub account and a repository; upload `app.py` and `requirements.txt`.
