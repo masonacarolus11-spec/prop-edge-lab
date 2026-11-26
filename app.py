@@ -2499,6 +2499,31 @@ def filter_prop_board(board, query='', market=None):
     return board
 
 
+def observed_line_movement(board, history, now):
+    """Record the earliest unambiguous, timestamped line seen in this session."""
+    opening, movement = [None] * len(board), [None] * len(board)
+    updates = {}
+    for index, row in enumerate(board.to_dict('records')):
+        start = pd.to_datetime(row.get('starts_utc'), utc=True, errors='coerce')
+        updated = pd.to_datetime(row.get('Line updated UTC'), utc=True, errors='coerce')
+        if pd.isna(start) or pd.isna(updated) or not updated <= now < start:
+            continue
+        identity = tuple(str(row[field]).strip().casefold() for field in ('event', 'player', 'market'))
+        updates.setdefault((*identity, start), []).append((index, updated, float(row['line'])))
+    for key, observations in updates.items():
+        if len(observations) != 1:
+            continue
+        index, updated, line = observations[0]
+        first = history.get(key)
+        if first is None or updated < first[0]:
+            first = history[key] = (updated, line)
+        if updated == first[0] and line != first[1]:
+            continue
+        opening[index] = first[1]
+        movement[index] = round(line - first[1], 4)
+    return board.assign(**{'First seen line': opening, 'Line movement': movement})
+
+
 def matching_site_lines(selected, boards, now):
     starts = pd.to_datetime(selected.get('starts_utc'), errors='coerce', utc=True)
     if pd.isna(starts) or starts <= now:
@@ -2589,6 +2614,10 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
     full_board = full_board.assign(**{
         'Line source': source, 'Line updated UTC': updated.where(updated.le(now)),
     })
+    if source != 'CSV upload':
+        histories = st.session_state.setdefault('observed_site_lines', {})
+        history = histories.setdefault((sport, platform), {})
+        full_board = observed_line_movement(full_board, history, now)
     coverage = [describe_board_coverage(row, now) for _, row in full_board.iterrows()]
     full_board = full_board.assign(
         Rating=[rating for rating, _ in explanations],
@@ -2599,7 +2628,7 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
     known = full_board['Line updated UTC'].notna().sum()
     st.caption(f'{source} · {known} of {len(full_board)} lines have a usable update timestamp. Line age is measured when the view renders.')
     columns = [
-        'player', 'market', 'line', 'Rating', 'Reason', 'Line age', 'Data coverage', 'Projected stat',
+        'player', 'market', 'line', 'Line movement', 'Rating', 'Reason', 'Line age', 'Data coverage', 'Projected stat',
         'side', 'market_estimate_pct', 'comparison_books', 'Auto status', 'Injury report status',
         'Pregame recheck', 'Minutes sensitivity', 'Opponent missed field goals per game',
         'Weather review', 'status', 'event',
@@ -2635,6 +2664,8 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
             st.caption(f"Line updated {row['Line updated UTC']:%Y-%m-%d %H:%M UTC} · {row['Line age']}")
         else:
             st.caption('Line update time unavailable.')
+        if pd.notna(row.get('Line movement')):
+            st.caption(f"First line seen this session {row['First seen line']:g} · Change {row['Line movement']:+g}")
         show_pick_evaluation(row)
         with st.expander('Compare this prop across sites'):
             comparison = matching_site_lines(row, site_boards, now)
