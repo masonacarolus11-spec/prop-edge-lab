@@ -3257,6 +3257,42 @@ def normalize_upload(df):
     df=df.copy(); df['line']=pd.to_numeric(df['line'],errors='coerce')
     return df.dropna(subset=['line'])
 
+
+def parse_pasted_props(text, platform):
+    rows, invalid = [], []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        if not raw.strip():
+            continue
+        fields = [field.strip() for field in raw.split('|')]
+        if len(fields) not in (5, 6) or not all(fields):
+            invalid.append(number)
+            continue
+        sport, event, player, market, line = fields[:5]
+        starts = None
+        try:
+            value = float(line)
+            if len(fields) == 6:
+                starts = dt.datetime.fromisoformat(fields[5].replace('Z', '+00:00'))
+                if starts.tzinfo is None:
+                    raise ValueError('Start time requires a timezone')
+        except ValueError:
+            invalid.append(number)
+            continue
+        if not math.isfinite(value) or sport.casefold() not in {name.casefold() for name in ALL_SPORTS}:
+            invalid.append(number)
+            continue
+        normalized = market.casefold().replace(' ', '_')
+        if sport.casefold() == 'nba' and normalized in ('points', 'rebounds', 'assists'):
+            market = f'player_{normalized}'
+        elif sport.casefold() == 'nfl':
+            market = {
+                'passing_yards': 'player_pass_yds', 'rushing_yards': 'player_rush_yds',
+                'receiving_yards': 'player_reception_yds',
+            }.get(normalized, market)
+        rows.append(dict(sport=sport, event=event, player=player, market=market,
+                         line=value, platform=platform, starts_utc=starts.isoformat() if starts else None))
+    return rows, invalid
+
 def add_pick(row):
     cols=['created_at','sport','event','player','market','line','side','model_prob','market_prob','edge','platform','payout_multiplier','notes','choice_key']
     vals=[dt.datetime.now(dt.timezone.utc).isoformat()]+[row.get(x) for x in cols[1:]]
@@ -3307,32 +3343,61 @@ with best:
         else:
             st.caption('Select a prop and save it to keep it here for this session.')
     pacific_today = dt.datetime.now(ZoneInfo('America/Los_Angeles')).date()
+    public_slate = st.query_params.get('nba_lines') == '2026-11-27'
+    sample_day = dt.date(2026, 11, 27)
+    default_day = sample_day if public_slate and pacific_today <= sample_day <= pacific_today + dt.timedelta(days=1) else pacific_today
     slate_date = st.date_input(
-        'Slate date (Pacific time)', value=pacific_today, min_value=pacific_today,
+        'Slate date (Pacific time)', value=default_day, min_value=pacific_today,
         max_value=pacific_today + dt.timedelta(days=1),
     )
     st.caption('Feed scans cover upcoming games on the selected day. CSV lines stay visible as uploaded.')
     platform = st.selectbox('Pick site', ['PrizePicks', 'Underdog', 'Sleeper'])
     st.subheader(f'{platform} board by sport')
     if platform == 'Sleeper':
-        source_mode = st.radio('Sleeper line source', ['Load with Apify', 'Upload CSVs'], horizontal=True)
+        source_mode = st.radio('Sleeper line source', ['Load with Apify', 'Upload CSVs', 'Paste lines'], horizontal=True)
     else:
-        source_mode = st.radio(f'{platform} line source', ['Load from feed', 'Upload CSVs'], horizontal=True)
+        source_mode = st.radio(f'{platform} line source', ['Load from feed', 'Upload CSVs', 'Paste lines'],
+                               index=2 if public_slate and platform == 'PrizePicks' else 0, horizontal=True)
     live_board = source_mode == 'Load from feed'
     sleeper_feed = source_mode == 'Load with Apify'
+    import_source = 'Pasted lines' if source_mode == 'Paste lines' else 'CSV upload'
     if live_board:
         st.caption(f'Loads standard {platform} lines from The Odds API for the selected upcoming games and markets. Feed coverage can differ from your {platform} board.')
-    elif not sleeper_feed:
+    elif source_mode == 'Upload CSVs':
         st.caption(f'Upload one or more CSVs. Every imported {platform} line stays visible.')
     template = pd.DataFrame(columns=['sport', 'event', 'player', 'market', 'line', 'platform'])
     uploads = []
-    if not live_board and not sleeper_feed:
+    if source_mode == 'Upload CSVs':
         st.download_button(f'Download {platform} CSV template', template.to_csv(index=False),
                            f'{platform.lower()}_template.csv', mime='text/csv')
         uploads = st.file_uploader(f'Upload current {platform} lines', type='csv',
                                    accept_multiple_files=True, key=f'{platform.lower()}_boards')
     boards = []
     board_ids = []
+    if source_mode == 'Paste lines':
+        initial_text = ''
+        if public_slate and platform == 'PrizePicks':
+            initial_text = Path(__file__).with_name('nba-lines-2026-11-27.txt').read_text(encoding='utf-8')
+            st.caption('Saved November 27 PrizePicks public snapshot. Lines can change.')
+            st.markdown('[Original PrizePicks board](https://www.prizepicks.com/sport/nba?date=2026-11-27&from=2026-11-25)')
+        st.caption('One prop per line. Use Sport | Away Team at Home Team | Player | Stat | Line.')
+        st.caption('You can add an optional sixth field for the scheduled start in ISO format with a timezone.')
+        with st.form(f'pasted_props:{platform}'):
+            pasted = st.text_area('Prop lines', value=initial_text,
+                                  placeholder='NBA | Away Team at Home Team | Player Name | Points | 19.5')
+            submitted = st.form_submit_button('Evaluate pasted lines')
+        pasted_boards = st.session_state.setdefault('pasted_prop_boards', {})
+        if initial_text and platform not in pasted_boards:
+            pasted_boards[platform] = (initial_text, *parse_pasted_props(initial_text, platform))
+        if submitted:
+            pasted_boards[platform] = (pasted, *parse_pasted_props(pasted, platform))
+        if platform in pasted_boards:
+            original, parsed, invalid = pasted_boards[platform]
+            if invalid:
+                st.warning('Check input rows ' + ', '.join(map(str, invalid[:20])) + '.')
+            if parsed:
+                boards.append(pd.DataFrame(parsed).reindex(columns=[*template.columns, 'Line updated UTC', 'starts_utc']))
+                board_ids.append(sha256(original.encode()).hexdigest())
     for upload in uploads:
         try:
             frame = normalize_upload(pd.read_csv(upload))
@@ -3372,7 +3437,7 @@ with best:
         for column in ['sport', 'event', 'player', 'market']:
             identity[column] = identity[column].astype(str).str.strip().str.casefold()
         all_lines = all_lines.loc[~identity.duplicated()]
-        st.caption(f'{len(all_lines)} unique {platform} lines across all uploads.')
+        st.caption(f'{len(all_lines)} unique {platform} lines imported.')
         with st.expander('View every imported line'):
             st.dataframe(all_lines, hide_index=True, use_container_width=True)
         board = all_lines[identity.loc[all_lines.index, 'sport'].eq(pick_sport.casefold())]
@@ -3383,7 +3448,7 @@ with best:
         show_sleeper_feed(pick_sport, slate_date)
     elif pick_sport not in PICK_MARKETS:
         if not board.empty:
-            show_best_picks_board(board, pick_sport, (platform, pick_sport, tuple(board_ids)), platform)
+            show_best_picks_board(board, pick_sport, (platform, pick_sport, tuple(board_ids)), platform, import_source)
         st.info(f'Upload {platform} lines to open the clickable {pick_sport} review. Live prop scanning is unavailable for this sport.')
     else:
         allowed_markets = PICK_MARKETS[pick_sport].split(',')
@@ -3441,7 +3506,7 @@ with best:
             st.info('Enter an Odds API key to compare lines.')
         saved = boards_by_scope.get(pick_scope)
         if not live_board and not board.empty and (saved is None or saved[1][0].empty):
-            show_best_picks_board(board, pick_sport, pick_scope, platform)
+            show_best_picks_board(board, pick_sport, pick_scope, platform, import_source)
         if saved is not None:
             loaded, (picks, checked, targeted, issues) = saved
             st.caption(f'Last scan {loaded.tz_convert("America/Los_Angeles"):%b %d at %I:%M %p PT} · {checked} of {targeted} selected games checked.')
@@ -3460,7 +3525,7 @@ with best:
                     st.caption(f'{len(picks)} {platform} lines loaded.')
                     picks = picks.drop(columns=['side', 'market_estimate_pct', 'comparison_books'])
                 show_best_picks_board(picks.assign(platform=platform), pick_sport, pick_scope, platform,
-                                      'The Odds API' if live_board else 'CSV upload')
+                                      'The Odds API' if live_board else import_source)
 
 with tab1:
     st.subheader('Live sportsbook market discovery')

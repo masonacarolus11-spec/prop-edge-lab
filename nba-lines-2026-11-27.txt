@@ -1,0 +1,40 @@
+NBA | Miami Heat at New York Knicks | Jalen Brunson | Points | 28.5 | 2026-11-28T00:00:00Z
+NBA | Miami Heat at New York Knicks | Giannis Antetokounmpo | Points | 27.5 | 2026-11-28T00:00:00Z
+NBA | Miami Heat at New York Knicks | Karl-Anthony Towns | Rebounds | 12.5 | 2026-11-28T00:00:00Z
+NBA | Miami Heat at New York Knicks | Giannis Antetokounmpo | Rebounds | 11.5 | 2026-11-28T00:00:00Z
+NBA | Miami Heat at New York Knicks | Davion Mitchell | Assists | 7.5 | 2026-11-28T00:00:00Z
+NBA | Miami Heat at New York Knicks | Jalen Brunson | Assists | 6.5 | 2026-11-28T00:00:00Z
+NBA | Milwaukee Bucks at Detroit Pistons | Cade Cunningham | Points | 24.5 | 2026-11-28T00:30:00Z
+NBA | Philadelphia 76ers at Indiana Pacers | Tyrese Maxey | Points | 26.5 | 2026-11-28T00:30:00Z
+NBA | Philadelphia 76ers at Indiana Pacers | Joel Embiid | Points | 24.5 | 2026-11-28T00:30:00Z
+NBA | Philadelphia 76ers at Indiana Pacers | Joel Embiid | Rebounds | 8.5 | 2026-11-28T00:30:00Z
+NBA | Philadelphia 76ers at Indiana Pacers | LeBron James | Rebounds | 6.5 | 2026-11-28T00:30:00Z
+NBA | Philadelphia 76ers at Indiana Pacers | Andrew Nembhard | Assists | 8.5 | 2026-11-28T00:30:00Z
+NBA | Philadelphia 76ers at Indiana Pacers | LeBron James | Assists | 6.5 | 2026-11-28T00:30:00Z
+NBA | Brooklyn Nets at Toronto Raptors | Scottie Barnes | Points | 21.5 | 2026-11-28T00:30:00Z
+NBA | Brooklyn Nets at Toronto Raptors | Michael Porter Jr. | Points | 20.5 | 2026-11-28T00:30:00Z
+NBA | Atlanta Hawks at Boston Celtics | Jayson Tatum | Points | 27.5 | 2026-11-28T01:00:00Z
+NBA | Atlanta Hawks at Boston Celtics | Nickeil Alexander-Walker | Points | 20.5 | 2026-11-28T01:00:00Z
+NBA | Atlanta Hawks at Boston Celtics | Dyson Daniels | Rebounds | 7.5 | 2026-11-28T01:00:00Z
+NBA | Atlanta Hawks at Boston Celtics | Paul George | Rebounds | 5.5 | 2026-11-28T01:00:00Z
+NBA | Atlanta Hawks at Boston Celtics | Dyson Daniels | Assists | 5.5 | 2026-11-28T01:00:00Z
+NBA | Atlanta Hawks at Boston Celtics | Derrick White | Assists | 4.5 | 2026-11-28T01:00:00Z
+NBA | Memphis Grizzlies at Minnesota Timberwolves | Ty Jerome | Points | 22.5 | 2026-11-28T01:30:00Z
+NBA | Memphis Grizzlies at Minnesota Timberwolves | LaMelo Ball | Points | 18.5 | 2026-11-28T01:30:00Z
+NBA | Dallas Mavericks at Phoenix Suns | Devin Booker | Points | 25.5 | 2026-11-28T02:00:00Z
+NBA | Dallas Mavericks at Phoenix Suns | Cooper Flagg | Points | 24.5 | 2026-11-28T02:00:00Z
+NBA | Dallas Mavericks at Phoenix Suns | Cooper Flagg | Rebounds | 6.5 | 2026-11-28T02:00:00Z
+NBA | Dallas Mavericks at Phoenix Suns | Daniel Gafford | Rebounds | 6.5 | 2026-11-28T02:00:00Z
+NBA | Dallas Mavericks at Phoenix Suns | Cooper Flagg | Assists | 6.5 | 2026-11-28T02:00:00Z
+NBA | Dallas Mavericks at Phoenix Suns | Devin Booker | Assists | 5.5 | 2026-11-28T02:00:00Z
+NBA | Los Angeles Lakers at San Antonio Spurs | Luka Dončić | Points | 33.5 | 2026-11-28T02:30:00Z
+NBA | Los Angeles Lakers at San Antonio Spurs | Victor Wembanyama | Points | 31.5 | 2026-11-28T02:30:00Z
+NBA | Los Angeles Lakers at San Antonio Spurs | Victor Wembanyama | Rebounds | 11.5 | 2026-11-28T02:30:00Z
+NBA | Los Angeles Lakers at San Antonio Spurs | Walker Kessler | Rebounds | 10.5 | 2026-11-28T02:30:00Z
+NBA | Los Angeles Lakers at San Antonio Spurs | Luka Dončić | Assists | 7.5 | 2026-11-28T02:30:00Z
+NBA | Los Angeles Lakers at San Antonio Spurs | Austin Reaves | Assists | 3.5 | 2026-11-28T02:30:00Z
+NBA | Denver Nuggets at Utah Jazz | Nikola Jokić | Points | 24.5 | 2026-11-28T02:30:00Z
+NBA | Denver Nuggets at Utah Jazz | Jamal Murray | Points | 22.5 | 2026-11-28T02:30:00Z
+NBA | Denver Nuggets at Utah Jazz | Nikola Jokić | Rebounds | 12.5 | 2026-11-28T02:30:00Z
+NBA | Denver Nuggets at Utah Jazz | Jaxson Hayes | Rebounds | 6.5 | 2026-11-28T02:30:00Z
+NBA | Denver Nuggets at Utah Jazz | Nikola Jokić | Assists | 8.5 | 2026-11-28T02:30:00Z
