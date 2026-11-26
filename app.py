@@ -2562,6 +2562,16 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         site_boards[platform] = picks[fields].assign(**{
             'Line source': source, 'Line updated UTC': picks.get(timestamp_field),
         })
+    updated = pd.to_datetime(full_board.get(timestamp_field, pd.Series(index=full_board.index, dtype=object)),
+                             utc=True, errors='coerce', format='mixed')
+    now = pd.Timestamp.now(tz='UTC')
+    full_board = full_board.assign(**{
+        'Line source': source, 'Line updated UTC': updated.where(updated.le(now)),
+    })
+    if source != 'CSV upload':
+        histories = st.session_state.setdefault('observed_site_lines', {})
+        history = histories.setdefault((sport, platform), {})
+        full_board = observed_line_movement(full_board, history, now)
     st.subheader(f'{platform} · {sport} prop review')
     st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
     board_key = f'{sport}:{platform}'
@@ -2608,16 +2618,6 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
             return
         st.caption(f'{len(full_board)} eligible leans shown.')
     explanations = [pick_evaluation(row)[:2] for _, row in full_board.iterrows()]
-    updated = pd.to_datetime(full_board.get(timestamp_field, pd.Series(index=full_board.index, dtype=object)),
-                             utc=True, errors='coerce', format='mixed')
-    now = pd.Timestamp.now(tz='UTC')
-    full_board = full_board.assign(**{
-        'Line source': source, 'Line updated UTC': updated.where(updated.le(now)),
-    })
-    if source != 'CSV upload':
-        histories = st.session_state.setdefault('observed_site_lines', {})
-        history = histories.setdefault((sport, platform), {})
-        full_board = observed_line_movement(full_board, history, now)
     coverage = [describe_board_coverage(row, now) for _, row in full_board.iterrows()]
     full_board = full_board.assign(
         Rating=[rating for rating, _ in explanations],
