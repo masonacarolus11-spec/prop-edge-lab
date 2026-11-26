@@ -2476,6 +2476,28 @@ def filter_prop_board(board, query='', market=None):
     return board
 
 
+def matching_site_lines(selected, boards, now):
+    starts = pd.to_datetime(selected.get('starts_utc'), errors='coerce', utc=True)
+    if pd.isna(starts) or starts <= now:
+        return pd.DataFrame()
+    identity = ('event', 'player', 'market')
+    matches = []
+    for platform, board in boards.items():
+        matching = pd.to_datetime(board['starts_utc'], errors='coerce', utc=True).eq(starts)
+        for field in identity:
+            matching &= board[field].astype('string').str.strip().str.casefold().eq(
+                str(selected[field]).strip().casefold()
+            ).fillna(False)
+        matches.extend(board.loc[matching].assign(Site=platform).to_dict('records'))
+    if not matches:
+        return pd.DataFrame()
+    comparison = pd.DataFrame(matches)
+    return (comparison[['Site', 'line', 'Line source', 'Line updated UTC']]
+            .drop_duplicates(['Site', 'line'])
+            .sort_values(['line', 'Site'])
+            .rename(columns={'line': 'Line'}))
+
+
 def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', source='CSV upload'):
     adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
@@ -2483,6 +2505,15 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         full_board = pregame_recheck(full_board, sport)
     if sport in adapters:
         track_model_scan(full_board, sport, platform)
+    timestamp_field = {'The Odds API': 'prizepicks_updated_utc', 'Apify': 'Sleeper updated UTC'}.get(
+        source, 'Line updated UTC',
+    )
+    site_boards = st.session_state.setdefault('site_comparison_boards', {}).setdefault(sport, {})
+    fields = ['event', 'player', 'market', 'line', 'starts_utc']
+    if all(field in picks for field in fields):
+        site_boards[platform] = picks[fields].assign(**{
+            'Line source': source, 'Line updated UTC': picks.get(timestamp_field),
+        })
     st.subheader(f'{platform} · {sport} prop review')
     st.caption(f'{len(full_board)} lines. Select a row to review the available evidence.')
     board_key = f'{sport}:{platform}'
@@ -2517,10 +2548,6 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
             return
         st.caption(f'{len(full_board)} eligible leans shown.')
     explanations = [pick_evaluation(row)[:2] for _, row in full_board.iterrows()]
-    timestamp_field = {
-        'The Odds API': 'prizepicks_updated_utc',
-        'Apify': 'Sleeper updated UTC',
-    }.get(source, 'Line updated UTC')
     updated = pd.to_datetime(full_board.get(timestamp_field, pd.Series(index=full_board.index, dtype=object)),
                              utc=True, errors='coerce', format='mixed')
     now = pd.Timestamp.now(tz='UTC')
@@ -2573,6 +2600,13 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         else:
             st.caption('Line update time unavailable.')
         show_pick_evaluation(row)
+        with st.expander('Compare this prop across sites'):
+            comparison = matching_site_lines(row, site_boards, now)
+            if comparison.empty or comparison['Site'].nunique() < 2:
+                st.info('Load another site’s board with the same upcoming matchup and market to compare lines.')
+            else:
+                st.dataframe(comparison, hide_index=True)
+                st.caption('Compares saved lines in this session. Check timestamps and site payouts before comparing offers.')
         if row.get('Pregame recheck'):
             st.warning('Pregame recheck · ' + row['Pregame recheck'].replace('\n', ' · '))
             st.caption('Review the changed line or availability before using the earlier evaluation.')
@@ -2851,8 +2885,7 @@ def sportsbook_rows(data):
 
 def match_prizepicks(event_rankings, board):
     fields = ['event', 'player', 'market', 'line']
-    if 'Line updated UTC' in board:
-        fields.append('Line updated UTC')
+    fields.extend(field for field in ('Line updated UTC', 'starts_utc') if field in board)
     if not event_rankings:
         return board[fields].assign(
             side=None, market_estimate_pct=None, comparison_books=None
@@ -3102,7 +3135,7 @@ with best:
         if frame.empty:
             st.info(f'{upload.name} has no valid {platform} lines.')
             continue
-        boards.append(frame.reindex(columns=[*template.columns, 'Line updated UTC']))
+        boards.append(frame.reindex(columns=[*template.columns, 'Line updated UTC', 'starts_utc']))
         board_ids.append(sha256(upload.getvalue()).hexdigest())
 
     requested_sport = st.query_params.get('sport')
