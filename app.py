@@ -2550,6 +2550,17 @@ def matching_site_lines(selected, boards, now):
     })
 
 
+def paper_pick_summary(board, sport, platform):
+    lines = [f'{sport} | {platform} paper picks']
+    for row in board.to_dict('records'):
+        market = str(row['market']).removeprefix('player_').replace('_', ' ')
+        side = row['Model signal'].removeprefix('Model lean: ')
+        matchup = str(row['event'])
+        gap = abs(float(row['Model–market Over gap (pp)']))
+        lines.append(f"{row['player']} · {side} {row['line']:g} {market} · {matchup} · {gap:g} pp model–market gap")
+    return '\n'.join(lines)
+
+
 def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', source='CSV upload'):
     adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
@@ -2605,6 +2616,8 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         else:
             st.caption(f'{size}-prop paper lineup')
         st.caption('Takes the largest model-to-market gaps first, with one prop per player and matchup. Joint probabilities and site payouts are unmodeled.')
+        with st.expander('Copy paper lineup'):
+            st.code(paper_pick_summary(full_board, sport, platform), language=None)
     if review_order == 'Pregame watchlist':
         full_board = watchlist
         if full_board.empty:
@@ -2621,6 +2634,8 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
             st.info('No eligible model leans with exact-line sportsbook comparisons on this board.')
             return
         st.caption(f'{len(full_board)} eligible leans shown.')
+        with st.expander('Copy ranked picks'):
+            st.code(paper_pick_summary(full_board, sport, platform), language=None)
     explanations = [pick_evaluation(row)[:2] for _, row in full_board.iterrows()]
     coverage = [describe_board_coverage(row, now) for _, row in full_board.iterrows()]
     full_board = full_board.assign(
