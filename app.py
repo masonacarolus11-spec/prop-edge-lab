@@ -2561,6 +2561,45 @@ def paper_pick_summary(board, sport, platform):
     return '\n'.join(lines)
 
 
+def exact_line_prices(offers):
+    prices = offers.loc[offers['side'].isin(['Over', 'Under'])].copy()
+    prices['odds'] = pd.to_numeric(prices['odds'], errors='coerce')
+    prices = prices.loc[np.isfinite(prices['odds']) & prices['odds'].abs().ge(100)]
+    prices = prices.dropna(subset=['book', 'player', 'market', 'line'])
+    prices['decimal'] = np.where(prices['odds'].gt(0), 1 + prices['odds'] / 100,
+                                 1 + 100 / prices['odds'].abs())
+    prices = prices.sort_values(['side', 'decimal', 'book'], ascending=[True, False, True])
+    prices = prices.drop_duplicates(['player', 'market', 'line', 'side', 'book'])
+    groups = {}
+    for key, group in prices.groupby(['player', 'market', 'line']):
+        best = group.groupby('side')['decimal'].transform('max')
+        display = group.assign(**{
+            'Side': group['side'].map({'Over': 'More', 'Under': 'Less'}),
+            'Top price': group['decimal'].eq(best),
+        })[['book', 'Side', 'odds', 'Top price', 'updated']]
+        groups[key] = display.rename(columns={
+            'book': 'Sportsbook', 'odds': 'American odds', 'updated': 'Updated UTC',
+        }).to_json(orient='records')
+    return groups
+
+
+def save_prop_for_review(row, sport, platform):
+    saved = st.session_state.setdefault('saved_board_props', {})
+    fields = ('event', 'player', 'market', 'line')
+    identity = (sport, platform, *(row[field] for field in fields), str(row.get('starts_utc', '')))
+    if identity in saved:
+        if st.button('Remove saved prop', key=f'unsave:{identity}'):
+            del saved[identity]
+            st.rerun()
+    elif st.button('Save prop for review', key=f'save:{identity}'):
+        saved[identity] = {
+            'Sport': sport, 'Site': platform, 'Player': row['player'], 'Matchup': row['event'],
+            'Market': row['market'], 'Line': row['line'], 'Rating': row['Rating'],
+            'Reason': row['Reason'], 'Line updated UTC': row['Line updated UTC'],
+        }
+        st.rerun()
+
+
 def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', source='CSV upload'):
     adapters = {'NBA': automatic_nba_board, 'NFL': automatic_nfl_board}
     full_board = adapters[sport](picks, board_scope) if sport in adapters else picks
@@ -2688,6 +2727,11 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
         if isinstance(row.get('Offer page URL'), str) and row['Offer page URL']:
             st.link_button(f"Open {platform} {row['Offer page type'].lower()} page", row['Offer page URL'])
         show_pick_evaluation(row)
+        save_prop_for_review(row, sport, platform)
+        if isinstance(row.get('Exact-line sportsbook prices'), str):
+            with st.expander('Compare exact-line sportsbook prices'):
+                st.dataframe(json.loads(row['Exact-line sportsbook prices']), hide_index=True)
+                st.caption('Top price compares the available sportsbook quotes separately for each side of this exact line.')
         with st.expander('Compare this prop across sites'):
             comparison = matching_site_lines(row, site_boards, now)
             if comparison.empty or comparison['Site'].nunique() < 2:
@@ -2709,7 +2753,7 @@ def show_best_picks_board(picks, sport, board_scope, platform='PrizePicks', sour
             st.caption('Starting-lineup confirmation is unavailable from the connected NBA sources.')
             show_scanned_nba_context(row, f'board_minutes:{table_key}:{selected}')
         with st.expander('Full stats and market details'):
-            details = row.drop(labels=['event_id'], errors='ignore').dropna()
+            details = row.drop(labels=['event_id', 'Exact-line sportsbook prices'], errors='ignore').dropna()
             st.dataframe(details.astype(str).rename('Value'), use_container_width=True)
     st.download_button('Download Best picks board with research', full_board.to_csv(index=False),
                        f'{sport.lower()}_{platform.lower()}_best_picks.csv', mime='text/csv')
@@ -3114,9 +3158,10 @@ def compare_live_event(data, event, markets, platform='PrizePicks'):
     )
     if board.empty:
         return pd.DataFrame()
-    ranked = rank_sportsbook_prices(sportsbook_rows({
+    sportsbook_offers = sportsbook_rows({
         'bookmakers': [book for book in books if book.get('key') and book['key'] not in DFS_BOOK_KEYS]
-    }))
+    })
+    ranked = rank_sportsbook_prices(sportsbook_offers)
     results = match_prizepicks([ranked.assign(event=event_label(event))] if not ranked.empty else [],
                               board)
     results = results.merge(
@@ -3136,6 +3181,11 @@ def compare_live_event(data, event, markets, platform='PrizePicks'):
         'Offer page URL': [link for link, _ in pages],
         'Offer page type': [label for _, label in pages],
     })
+    if not sportsbook_offers.empty:
+        quotes = exact_line_prices(sportsbook_offers)
+        results['Exact-line sportsbook prices'] = [
+            quotes.get(key) for key in results[['player', 'market', 'line']].itertuples(index=False, name=None)
+        ]
     return results.assign(
         event_id=event['id'], starts_utc=event['commence_time'], platform=platform,
         status=results['market_estimate_pct'].notna().map({
@@ -3215,6 +3265,13 @@ best,tab1,tab2,tab3,tab4,research,report_card=st.tabs(['Best picks', '🔎 Scan 
 key_id = sha256(api_key.encode()).hexdigest()
 with best:
     st.subheader('Daily Slate')
+    with st.expander('Saved props'):
+        saved = st.session_state.get('saved_board_props', {})
+        if saved:
+            st.dataframe(pd.DataFrame(saved.values()), hide_index=True)
+            st.caption('Saved snapshots stay here for this session across sports and sites.')
+        else:
+            st.caption('Select a prop and save it to keep it here for this session.')
     pacific_today = dt.datetime.now(ZoneInfo('America/Los_Angeles')).date()
     slate_date = st.date_input(
         'Slate date (Pacific time)', value=pacific_today, min_value=pacific_today,
